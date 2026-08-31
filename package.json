@@ -29,6 +29,9 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~57.0.2",
+    "tsx": "^4.23.13",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -37,7 +40,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "verify:model": "tsx scripts/verify-solar-model.ts",
+    "build:web": "expo export --platform web && cp \"dist/+not-found.html\" dist/404.html"
   },
   "private": true
 }

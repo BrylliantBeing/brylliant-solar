@@ -1,56 +1,87 @@
-# Welcome to your Expo app 👋
+# Brylliant Solar
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Universal Expo app for Brylliant Solar — solar distribution and installation in
+Zamboanga City. One codebase runs as the marketing website (Expo Router static
+web output) and as an iOS/Android app.
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Running it
 
 ```bash
-npm run reset-project
+npm install
+npm run web        # website in a browser
+npm run ios        # iOS simulator
+npm run android    # Android emulator
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Where things live
 
-### Other setup steps
+```
+src/
+  app/
+    _layout.tsx      root layout, brand navigation theme
+    index.tsx        home — hero, packages, process, proof, FAQ, footer
+    estimate.tsx     the savings estimator
+    book.tsx         free-survey booking form
+  components/
+    brand-mark.tsx   the Vinta Sun logo, drawn with Views (no SVG dependency)
+    themed-text.tsx  the type scale
+    ui/kit.tsx       Card, Section, Button, Chip, Stat, Bullet, Callout
+    app-tabs.tsx     native bottom tabs (iOS/Android)
+    app-tabs.web.tsx top navigation bar (web)
+  constants/
+    theme.ts         brand palette, spacing, type
+    solar.ts         **the pricing and sizing model — start here**
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+## The model
 
-## Learn more
+`src/constants/solar.ts` is the single source of truth for every number the app
+shows. Change a value there and the estimator, the package cards and the worked
+example on the home screen all follow.
 
-To learn more about developing your project with Expo, look at the following resources:
+### Real supplier quotes
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+| Item | Price |
+|---|---|
+| Jinko 720 Wp panel | $82.80 |
+| Deye SUN-3K-SG04LP1-24 | $598 |
+| Deye SUN-6K-SG04LP1 | $730 |
+| Deye SUN-12K-SG02LP1 | $1,527 |
 
-## Join the community
+### Estimates that need replacing with measured costs
 
-Join our community of developers creating universal apps.
+These were derived from the hardware above plus market comparison. They are the
+first things to correct once real jobs are done.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+| Assumption | Current | Note |
+|---|---|---|
+| Installed ₱/kWp, Standard | 45,000 | Market: grid-tie ₱33.5–38k, hybrid ₱43–68k |
+| Installed ₱/kWp, Daylight | 58,000 | Small systems carry the fixed job cost |
+| Battery ₱/kWh | 17,000 | **No supplier quote yet — get one** |
+| Grid rate ₱/kWh | 12.00 | Re-check every billing month |
+| Export credit ₱/kWh | 6.00 | Blended generation rate, not retail |
+| Fixed charge ₱/month | 250 | Placeholder — read the real one off a bill |
+| Yield kWh/kWp/day | 5.6 | Zamboanga annual average |
+| Self-use % | 45 / 65 / 90 / 95 | Biggest lever in the model. Verify with monitoring data |
+
+The fixed cost per job — permits, mobilisation, AC protection, scaffolding — is
+what makes small systems unprofitable at market ₱/kWp. Track it precisely on the
+first three installations.
+
+## Before launch
+
+- [ ] Replace placeholder contact details (footer, booking screen)
+- [ ] Wire the booking form to an inbox, Messenger handoff or CRM — it currently
+      validates and produces a summary for the customer to send
+- [ ] Replace `assets/images/` icons and splash with the brand mark
+- [ ] Add the brand typefaces (Bricolage Grotesque, Newsreader, IBM Plex Mono)
+      via `expo-font`; the app currently uses platform system fonts
+- [ ] Get a battery supplier quote and update `Model.batteryPerKwh`
+- [ ] Confirm whether the hardware quotes are landed or FOB — if FOB, add ~21%
+      for freight and VAT
+
+## Theme
+
+The app is light-only, matching the website. The dark palette is already defined
+in `src/constants/theme.ts`; set `FORCE_LIGHT = false` in `src/hooks/use-theme.ts`
+and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
