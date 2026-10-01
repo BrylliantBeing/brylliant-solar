@@ -129,7 +129,9 @@ const csvField = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}
  * Turns the meter's consumption export into "timestamp,kWh" CSV for
  * parseConsumptionCsv, so it is saved and reloaded like a pasted file.
  * The header is DateTime followed by one consumption/production pair
- * (Phase A, B or C, or Total); only the consumption column is kept.
+ * (Phase A, B or C, or Total). The pair is often swapped by a CT clamp fitted
+ * the wrong way round, so one column holds the reading and the other 0: every
+ * row takes the larger of the two as consumption.
  */
 export async function consumptionXlsxToCsv(data: ArrayBuffer): Promise<string> {
   const XLSX = await import('xlsx');
@@ -145,14 +147,19 @@ export async function consumptionXlsxToCsv(data: ArrayBuffer): Promise<string> {
   const header = grid[headerRow].map(text);
   const timeIdx = header.findIndex((h) => /date ?time|timestamp/i.test(h));
   const kwhIdx = header.findIndex((h) => /consumption/i.test(h));
+  const prodIdx = header.findIndex((h) => /production/i.test(h));
   if (timeIdx < 0) throw new Error('No DateTime column found next to the consumption column.');
 
-  const lines = [`timestamp,${csvField(header[kwhIdx])}`];
+  const column = prodIdx >= 0 ? `larger of ${header[kwhIdx]} / ${header[prodIdx]}` : header[kwhIdx];
+  const lines = [`timestamp,${csvField(column)}`];
   for (const r of grid.slice(headerRow + 1)) {
     const time = r[timeIdx];
-    const kwh = r[kwhIdx];
-    if (time == null && kwh == null) continue;
-    lines.push(`${csvField(typeof time === 'number' ? serialToText(time) : text(time))},${csvField(text(kwh))}`);
+    const used = text(r[kwhIdx]);
+    const prod = prodIdx >= 0 ? text(r[prodIdx]) : '';
+    if (time == null && !used && !prod) continue;
+    // A non-numeric cell is passed through so parseConsumptionCsv reports the row.
+    const kwh = isNumber(prod) && (!isNumber(used) || toNumber(prod) > toNumber(used)) ? prod : used || prod;
+    lines.push(`${csvField(typeof time === 'number' ? serialToText(time) : text(time))},${csvField(kwh)}`);
   }
   return lines.join('\n');
 }
