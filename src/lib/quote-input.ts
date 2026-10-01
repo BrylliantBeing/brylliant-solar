@@ -58,7 +58,9 @@ export function parseConsumptionCsv(text: string): ConsumptionParseResult {
 
   if (hasHeader) {
     const h = rows[0].map((c) => c.trim().toLowerCase());
-    kwhIdx = h.findIndex((c) => /kwh|consumption|energy|usage|load/.test(c));
+    // Meter exports pair each consumption column with a production one; never read production.
+    kwhIdx = h.findIndex((c) => /consumption|usage|load/.test(c));
+    if (kwhIdx < 0) kwhIdx = h.findIndex((c) => /kwh|energy/.test(c) && !/production|generation|export/.test(c));
     tsIdx = h.findIndex((c) => /timestamp|date ?time|date_time/.test(c));
     if (tsIdx < 0) {
       dateIdx = h.findIndex((c) => /date|day/.test(c));
@@ -108,6 +110,51 @@ export function parseConsumptionCsv(text: string): ConsumptionParseResult {
   });
 
   return { readings, skipped, columns, totalKwh };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Consumption .xlsx
+// ─────────────────────────────────────────────────────────────
+
+/** Excel serial date as "YYYY-MM-DD HH:mm", with no timezone applied. */
+function serialToText(serial: number): string {
+  const d = new Date(Math.round((serial - 25569) * 1440) * 60_000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
+const csvField = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+
+/**
+ * Turns the meter's consumption export into "timestamp,kWh" CSV for
+ * parseConsumptionCsv, so it is saved and reloaded like a pasted file.
+ * The header is DateTime followed by one consumption/production pair
+ * (Phase A, B or C, or Total); only the consumption column is kept.
+ */
+export async function consumptionXlsxToCsv(data: ArrayBuffer): Promise<string> {
+  const XLSX = await import('xlsx');
+  // cellDates: false keeps real Excel dates as serials, converted above without a timezone.
+  const workbook = XLSX.read(data, { type: 'array', cellDates: false });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) throw new Error('The workbook has no sheets.');
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: null });
+
+  const text = (c: unknown) => String(c ?? '').trim();
+  const headerRow = grid.findIndex((r) => r.some((c) => /consumption/i.test(text(c))));
+  if (headerRow < 0) throw new Error('No consumption column found in the first sheet.');
+  const header = grid[headerRow].map(text);
+  const timeIdx = header.findIndex((h) => /date ?time|timestamp/i.test(h));
+  const kwhIdx = header.findIndex((h) => /consumption/i.test(h));
+  if (timeIdx < 0) throw new Error('No DateTime column found next to the consumption column.');
+
+  const lines = [`timestamp,${csvField(header[kwhIdx])}`];
+  for (const r of grid.slice(headerRow + 1)) {
+    const time = r[timeIdx];
+    const kwh = r[kwhIdx];
+    if (time == null && kwh == null) continue;
+    lines.push(`${csvField(typeof time === 'number' ? serialToText(time) : text(time))},${csvField(text(kwh))}`);
+  }
+  return lines.join('\n');
 }
 
 // ─────────────────────────────────────────────────────────────

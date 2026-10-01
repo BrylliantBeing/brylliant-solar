@@ -33,6 +33,7 @@ import {
   defaultFieldText,
   defaultToggles,
   displayValue,
+  consumptionXlsxToCsv,
   num,
   parseConsumptionCsv,
   payback,
@@ -257,13 +258,15 @@ export default function QuoteCalculator() {
       <Panel title="1 · Hourly consumption (required)">
         <ThemedText type="small" themeColor="textSecondary">
           At least one week of hourly kWh: <ThemedText type="code">timestamp,kWh</ThemedText> or{' '}
-          <ThemedText type="code">date,hour,kWh</ThemedText>, with or without a header row.
+          <ThemedText type="code">date,hour,kWh</ThemedText>, with or without a header row, or the meter&apos;s
+          .xlsx export (its consumption column is used, production is ignored).
         </ThemedText>
         <DataSourceInput
           value={inputs.consumption}
           onChange={(v) => set('consumption', v)}
           placeholder={'timestamp,kWh\n2026-09-07 00:00,0.55\n2026-09-07 01:00,0.52\n…'}
           onSample={loadSample}
+          fromXlsx={consumptionXlsxToCsv}
         />
         {consumption ? (
           <View style={{ gap: Spacing.one }}>

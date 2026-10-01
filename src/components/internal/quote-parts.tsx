@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
@@ -9,47 +9,54 @@ import type { DataSource } from '@/lib/quotes-api';
 
 /* ---------------- file / paste input ---------------- */
 
-/** Opens the browser's file picker and reads the chosen file as text. Web only. */
-function pickTextFile(accept: string): Promise<{ name: string; text: string } | null> {
+/** Opens the browser's file picker and returns the chosen file. Web only. */
+function pickFile(accept: string): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = accept;
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return resolve(null);
-      file.text().then(
-        (text) => resolve({ name: file.name, text }),
-        () => resolve(null),
-      );
-    };
+    input.onchange = () => resolve(input.files?.[0] ?? null);
     input.click();
   });
 }
+
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 export type { DataSource };
 
 /**
  * A CSV the calculator needs: upload a file (web) or paste it. Uploaded files
  * are not put in a text box, since a year of hourly rows makes one crawl.
+ * With fromXlsx, an .xlsx upload is converted to that CSV text first.
  */
 export function DataSourceInput({
   value,
   onChange,
   placeholder,
   onSample,
+  fromXlsx,
 }: {
   value: DataSource;
   onChange: (next: DataSource) => void;
   placeholder: string;
   onSample?: () => void;
+  fromXlsx?: (data: ArrayBuffer) => Promise<string>;
 }) {
   const t = useTheme();
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const lines = value.text ? value.text.split(/\r\n|\r|\n/).filter((l) => l.trim()).length : 0;
 
   async function upload() {
-    const file = await pickTextFile('.csv,text/csv,text/plain');
-    if (file) onChange({ text: file.text, fileName: file.name });
+    const file = await pickFile('.csv,text/csv,text/plain' + (fromXlsx ? `,.xlsx,${XLSX_TYPE}` : ''));
+    if (!file) return;
+    setUploadError(null);
+    try {
+      const text =
+        fromXlsx && /\.xlsx$/i.test(file.name) ? await fromXlsx(await file.arrayBuffer()) : await file.text();
+      onChange({ text, fileName: file.name });
+    } catch (e) {
+      setUploadError(`${file.name}: ${(e as Error).message}`);
+    }
   }
 
   return (
@@ -80,12 +87,15 @@ export function DataSourceInput({
         />
       )}
       <View style={styles.row}>
-        {Platform.OS === 'web' ? <SmallButton label="Upload CSV…" onPress={upload} /> : null}
+        {Platform.OS === 'web' ? (
+          <SmallButton label={fromXlsx ? 'Upload CSV or Excel…' : 'Upload CSV…'} onPress={upload} />
+        ) : null}
         {onSample ? <SmallButton label="Use sample data" onPress={onSample} /> : null}
         {value.text && !value.fileName ? (
           <SmallButton label="Clear" onPress={() => onChange({ text: '', fileName: null })} />
         ) : null}
       </View>
+      {uploadError ? <MessageList title="Couldn't read the file" tone="warn" items={[uploadError]} /> : null}
     </View>
   );
 }
