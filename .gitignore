@@ -44,3 +44,5 @@ example
 
 # Real mail credentials — never commit (template: mail-config.example.php)
 mail-config.php
+# Build-generated server secrets (scripts/write-server-env.js) — never commit
+env.php

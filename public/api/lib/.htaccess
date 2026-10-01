@@ -1,0 +1,2 @@
+# Shared PHP includes, never requested directly.
+Require all denied

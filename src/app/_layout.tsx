@@ -1,10 +1,7 @@
-import { DefaultTheme, ThemeProvider } from 'expo-router';
+import { DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
-import { View } from 'react-native';
 
-import { AppHeader } from '@/components/app-header';
-import AppTabs from '@/components/app-tabs';
 import { Colors } from '@/constants/theme';
 
 SplashScreen.preventAutoHideAsync();
@@ -21,6 +18,10 @@ const BrandNavTheme = {
   },
 };
 
+/**
+ * Two sections share the root: the public site in (site), and the staff-only
+ * pages under /internal, which bring their own navigation and sign-in gate.
+ */
 export default function RootLayout() {
   useEffect(() => {
     SplashScreen.hideAsync();
@@ -28,10 +29,10 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={BrandNavTheme}>
-      <View style={{ flex: 1, backgroundColor: Colors.light.background }}>
-        <AppHeader />
-        <AppTabs />
-      </View>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(site)" />
+        <Stack.Screen name="internal" />
+      </Stack>
     </ThemeProvider>
   );
 }

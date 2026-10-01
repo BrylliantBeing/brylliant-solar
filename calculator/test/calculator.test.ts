@@ -1,0 +1,287 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as XLSX from 'xlsx';
+import {
+  __test, buildSunProfile, calculateQuote, formatWallTime, HourlyReading, parseOutageCsv,
+  parseZamboangaDateTime, QuoteDefaults, SunOutputRow, ZAMBOANGA_DEFAULTS, detectDateOrder,
+} from '../src/solarQuoteCalculator';
+
+const { outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear } = __test;
+const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS };
+const iso = (s: DateInputLike) => formatWallTime(parseZamboangaDateTime(s));
+type DateInputLike = string | number | Date;
+
+/** Hourly readings from a start date for n hours, load(dayIndex, hour). */
+function readings(start: string, hours: number, load: (day: number, hour: number) => number): HourlyReading[] {
+  const t0 = parseZamboangaDateTime(start);
+  return Array.from({ length: hours }, (_, i) => {
+    const t = t0 + i * 3600000;
+    const ts = formatWallTime(t).replace('T', ' ').slice(0, 16);
+    return { timestamp: ts, kWh: load(Math.floor(i / 24), new Date(t).getUTCHours()) };
+  });
+}
+
+function refFrom(r: HourlyReading[]) {
+  return buildReferenceWeek(parseConsumption(r));
+}
+
+const sunAll = (perHour: Record<number, number>) =>
+  Array.from({ length: 12 }, () => Array.from({ length: 24 }, (_, h) => perHour[h] ?? 0));
+
+// ── Day grouping and reference days ─────────────────────────
+
+test('Sep 1–7 example: every weekday maps to its own calendar day', () => {
+  const ref = refFrom(readings('2026-09-01 00:00', 168, () => 1));
+  assert.deepEqual(ref.dates, [
+    '2026-09-06', '2026-09-07', '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05',
+  ]);
+  assert.deepEqual(ref.fallbackWeekdays, []);
+});
+
+test('March 27, 2026 outage uses the Friday (Sep 4) profile', () => {
+  // Friday Sep 4 (day index 3) uses 2 kWh/h, every other day 1 kWh/h. No sun.
+  const ref = refFrom(readings('2026-09-01 00:00', 168, (d) => (d === 3 ? 2 : 1)));
+  const need = outageNeedKwh(
+    { start: parseZamboangaDateTime('2026-03-27 16:00'), end: parseZamboangaDateTime('2026-03-27 18:00') },
+    ref, sunAll({}), 0, cfg,
+  );
+  assert.equal(need, 4); // 2 hours × 2 kWh
+});
+
+test('With two weeks of data, the higher-consumption Friday is chosen', () => {
+  const ref = refFrom(readings('2026-09-01 00:00', 336, (d) => (d === 10 ? 3 : 1))); // Sep 11
+  assert.equal(ref.dates[5], '2026-09-11');
+});
+
+test('Partial days are never reference days; a weekday with none falls back with a warning', () => {
+  const warnings: string[] = [];
+  const ref = buildReferenceWeek(parseConsumption(readings('2026-09-01 15:00', 168, () => 1), undefined, warnings));
+  assert.equal(ref.dates[2], null); // Tuesday: Sep 1 and Sep 8 are both partial
+  assert.deepEqual(ref.fallbackWeekdays, [2]);
+});
+
+// ── Battery need per outage ─────────────────────────────────
+
+const flatRef = () => refFrom(readings('2026-09-01 00:00', 168, () => 0.5));
+
+test('Spec example: 1 kWh used, 0.6 kWh generated over 4–6pm → 0.4 kWh', () => {
+  const need = outageNeedKwh(
+    { start: parseZamboangaDateTime('2026-03-27 16:00'), end: parseZamboangaDateTime('2026-03-27 18:00') },
+    flatRef(), sunAll({ 16: 0.3, 17: 0.3 }), 1, cfg,
+  );
+  assert.ok(Math.abs(need - 0.4) < 1e-9);
+});
+
+test('Running balance: surplus refills an earlier drawdown', () => {
+  // 12:00 deficit 0.5, 13:00 surplus 0.5, 14:00 deficit 0.5 → deepest point 0.5
+  const need = outageNeedKwh(
+    { start: parseZamboangaDateTime('2026-03-27 12:00'), end: parseZamboangaDateTime('2026-03-27 15:00') },
+    flatRef(), sunAll({ 13: 1 }), 1, cfg,
+  );
+  assert.ok(Math.abs(need - 0.5) < 1e-9);
+});
+
+test('Running balance: surplus before any drawdown is lost (battery already full)', () => {
+  // 12:00 surplus 0.5 (nowhere to go), 13:00 and 14:00 deficit 0.5 each → 1.0
+  const need = outageNeedKwh(
+    { start: parseZamboangaDateTime('2026-03-27 12:00'), end: parseZamboangaDateTime('2026-03-27 15:00') },
+    flatRef(), sunAll({ 12: 1 }), 1, cfg,
+  );
+  assert.ok(Math.abs(need - 1.0) < 1e-9);
+});
+
+test('Partial hours are prorated: 4:30–6:00pm at 0.5 kWh/h → 0.75 kWh', () => {
+  const need = outageNeedKwh(
+    { start: parseZamboangaDateTime('2026-03-27 16:30'), end: parseZamboangaDateTime('2026-03-27 18:00') },
+    flatRef(), sunAll({}), 0, cfg,
+  );
+  assert.ok(Math.abs(need - 0.75) < 1e-9);
+});
+
+// ── Date parsing ────────────────────────────────────────────
+
+test('Date formats parse to Zamboanga wall-clock time', () => {
+  const want = '2026-09-04T16:00:00';
+  for (const s of [
+    '2026-09-04 16:00', '2026-09-04T16:00:00', '2026/09/04 4:00 PM', '2026-09-04 04:00:00 pm',
+    '4-Sep-2026 16:00', 'Sep 4, 2026 4:00 PM', '04 September 2026 16:00',
+    '2026-09-04T08:00:00Z', '2026-09-04T16:00:00+08:00', '2026-09-04T09:00:00+01:00',
+  ]) {
+    assert.equal(iso(s), want, s);
+  }
+  assert.equal(formatWallTime(parseZamboangaDateTime('04/09/2026 16:00', 'DMY')), want);
+  assert.equal(formatWallTime(parseZamboangaDateTime('09/04/2026 16:00', 'MDY')), want);
+  assert.equal(iso(46269 + 16 / 24), want); // Excel serial
+  assert.equal(iso('2026-09-03 24:00'), '2026-09-04T00:00:00');
+});
+
+test('Ambiguous or invalid dates throw instead of guessing', () => {
+  assert.throws(() => parseZamboangaDateTime('04/09/2026 16:00'), /Ambiguous/);
+  assert.throws(() => parseZamboangaDateTime('2026-02-30 10:00'), /Invalid calendar date/);
+  assert.throws(() => parseZamboangaDateTime('13:00 yesterday'), /Unrecognized/);
+  assert.throws(() => parseZamboangaDateTime(46), /not an Excel serial/);
+  assert.equal(parseZamboangaDateTime('25/09/2026 16:00'), parseZamboangaDateTime('2026-09-25 16:00'));
+});
+
+test('Date order is detected from the whole file', () => {
+  assert.equal(detectDateOrder(['01/09/2026', '25/09/2026']), 'DMY');
+  assert.equal(detectDateOrder(['09/01/2026', '09/25/2026']), 'MDY');
+  assert.equal(detectDateOrder(['01/09/2026', '02/09/2026']), undefined);
+  assert.throws(() => detectDateOrder(['25/09/2026', '09/25/2026']), /mix/);
+});
+
+// ── Outage CSV ──────────────────────────────────────────────
+
+test('Outage CSV: header, quoting, BOM, day-first detection, bad rows reported, exact location match', () => {
+  const csv = '﻿Location,Datetime Start,Datetime End\r\n' +
+    'Zamboanga City,05/01/2026 16:00,05/01/2026 18:00\r\n' +       // day-first, settled by next row
+    'zamboanga city ,27/03/2026 16:30,27/03/2026 18:00\r\n' +       // case/space differences match
+    '"Zamboanga Sibugay, Ipil",27/03/2026 10:00,27/03/2026 12:00\r\n' + // different location
+    'Zamboanga City,27/03/2026 16:30,27/03/2026 18:00\r\n' +         // duplicate
+    'Zamboanga City,31/02/2026 10:00,31/02/2026 11:00\r\n' +         // impossible date
+    'Zamboanga City,27/03/2026 18:00,27/03/2026 17:00\r\n';          // end before start
+  const r = parseOutageCsv(csv, { locations: 'Zamboanga City' });
+  assert.equal(r.dateOrder, 'DMY');
+  assert.deepEqual(r.outages.map((o) => [o.start, o.end]), [
+    ['2026-01-05T16:00:00', '2026-01-05T18:00:00'],
+    ['2026-03-27T16:30:00', '2026-03-27T18:00:00'],
+  ]);
+  assert.equal(r.duplicatesRemoved, 1);
+  assert.deepEqual(r.skipped.map((s) => s.line), [6, 7]);
+  assert.equal(r.locations['Zamboanga Sibugay, Ipil'], 1);
+});
+
+test('Outage CSV without a header row uses column order', () => {
+  const r = parseOutageCsv('Zamboanga City,2021-06-14 14:00:00,2021-06-14 15:30:00\n');
+  assert.equal(r.outages.length, 1);
+  assert.equal(r.outages[0].end, '2021-06-14T15:30:00');
+});
+
+// ── Sun profile from a real .xlsx ───────────────────────────
+
+/** 5-minute log, 1.6 kW peak bell curve between 06:00 and 18:00. */
+function sunRows(days: number, asText: boolean, skip?: (d: number, minute: number) => boolean) {
+  const rows: Record<string, unknown>[] = [];
+  for (let d = 1; d <= days; d++) {
+    for (let m = 0; m < 1440; m += 5) {
+      if (skip?.(d, m)) continue;
+      const h = m / 60;
+      const kw = h > 6 && h < 18 ? 1.6 * Math.sin((Math.PI * (h - 6)) / 12) : 0;
+      const time = asText
+        ? `2026-09-${String(d).padStart(2, '0')} ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`
+        : new Date(2026, 8, d, 0, m); // a real Excel date cell
+      rows.push({ 'Device Name': 'INV-01', Time: time, 'PV1 Input Power (kW)': Math.round(kw * 1000) / 1000 });
+    }
+  }
+  return rows;
+}
+
+function viaXlsx(rows: Record<string, unknown>[]): SunOutputRow[] {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Sheet1');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const back = XLSX.read(buf, { cellDates: false }); // same options as scripts/buildSunProfile.ts
+  return XLSX.utils.sheet_to_json<SunOutputRow>(back.Sheets.Sheet1, { raw: true });
+}
+
+const TRUE_YIELD = (1.6 * 12 * 2) / Math.PI / 1.95; // ∫ bell curve ÷ 1.95 kWp ≈ 6.268
+
+test('Sun profile: real Excel dates and text dates give the same, correct yield', () => {
+  const real = viaXlsx(sunRows(3, false));
+  const text = viaXlsx(sunRows(3, true));
+  assert.equal(typeof real[0].Time, 'number'); // Excel serial, as SheetJS returns it
+  assert.equal(typeof text[0].Time, 'string');
+  const a = buildSunProfile(real);
+  const b = buildSunProfile(text);
+  assert.ok(Math.abs(a.dailyYieldByMonth[8] - TRUE_YIELD) / TRUE_YIELD < 0.01, String(a.dailyYieldByMonth[8]));
+  assert.deepEqual(a.dailyYieldByMonth, b.dailyYieldByMonth);
+  assert.equal(a.daysUsedByMonth[8], 3);
+  assert.equal(a.sampleIntervalMinutes, 5);
+});
+
+test('Sun profile: a day with a logger dropout is excluded, not averaged in', () => {
+  const rows = viaXlsx(sunRows(3, true, (d, m) => d === 2 && m >= 600 && m < 840)); // Sep 2, 10:00–14:00 missing
+  const r = buildSunProfile(rows);
+  assert.equal(r.daysUsedByMonth[8], 2);
+  assert.equal(r.daysExcluded, 1);
+  assert.ok(Math.abs(r.dailyYieldByMonth[8] - TRUE_YIELD) / TRUE_YIELD < 0.01);
+});
+
+test('Sun profile: several devices without a deviceName throws', () => {
+  const rows = viaXlsx([...sunRows(1, true), ...sunRows(1, true).map((r) => ({ ...r, 'Device Name': 'INV-02' }))]);
+  assert.throws(() => buildSunProfile(rows), /Multiple devices/);
+  assert.equal(buildSunProfile(rows, { deviceName: 'inv-02' }).daysUsedByMonth[8], 1);
+});
+
+// ── Full quote ──────────────────────────────────────────────
+
+const week = () => readings('2026-09-01 00:00', 168, (d, h) => (h >= 18 && h < 23 ? 2.5 : h >= 9 && h < 17 ? 1.2 : 0.6) + d * 0.05);
+const realSun = buildSunProfile(viaXlsx(sunRows(3, true))).profile;
+const outageLog = [
+  { start: '2025-11-14 17:00', end: '2025-11-14 21:00' },
+  { start: '2026-02-03 13:00', end: '2026-02-03 15:30' },
+  { start: '2026-05-22 19:00', end: '2026-05-23 01:00' },
+  { start: '2024-07-08 08:00', end: '2024-07-08 12:00' },
+  { start: '2023-03-27 18:30', end: '2023-03-27 20:00' },
+];
+
+test('Quote: pricing adds up exactly as specified', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  const p = q.pricing;
+  assert.equal(p.panels, Math.round(q.panels.count * 5173.96 * 100) / 100);
+  assert.equal(p.inverters, q.inverter.count * 44366.12);
+  assert.equal(p.batteries, Math.round(q.battery.units * 61237.75 * 100) / 100);
+  const hardware = q.panels.count * 5173.96 + q.inverter.count * 44366.12 + q.battery.units * 61237.75;
+  assert.ok(Math.abs(p.total - (hardware * 1.4 + 20625 + 1500)) < 0.01);
+});
+
+test('Quote: meets 95%, and one panel fewer would not', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  assert.ok(q.bill.reductionPercent >= 95, String(q.bill.reductionPercent));
+  const ref = refFrom(week());
+  const parsed = outageLog.map((o) => ({ start: parseZamboangaDateTime(o.start), end: parseZamboangaDateTime(o.end) }));
+  const ctx = buildSimContext(ref, realSun.monthly, parsed);
+  const fewer = simulateYear(ctx, ((q.panels.count - 1) * 720) / 1000, q.battery.installedKwh, q.inverter.totalKw, cfg);
+  assert.ok(fewer.billAfter > fewer.baseline * 0.05);
+  assert.equal(q.bill.monthly.length, 12);
+  assert.equal(q.simulation.start, '2025-09-01T00:00:00');
+});
+
+test('Quote: battery is the 80th percentile of outage needs, rounded up to 10 kWh units', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  assert.equal(q.battery.requiredKwh, q.battery.needStats.p80);
+  assert.equal(q.battery.units, Math.max(1, Math.ceil(q.battery.requiredKwh / 10 - 1e-9)));
+  assert.equal(q.battery.outagesAnalyzed, 5); // every outage counts, whatever year it was in
+});
+
+test('Quote: no outage data gives one battery unit and a warning', () => {
+  const q = calculateQuote({ consumption: week(), sunProfile: realSun });
+  assert.equal(q.battery.units, 1);
+  assert.ok(q.warnings.some((w) => w.includes('No outage data')));
+});
+
+test('Quote: during an outage nothing is exported, and unmet load is reported', () => {
+  const ref = refFrom(week());
+  const allDay = [{ start: parseZamboangaDateTime('2026-03-27 00:00'), end: parseZamboangaDateTime('2026-03-29 00:00') }];
+  const withOutage = simulateYear(buildSimContext(ref, realSun.monthly, allDay), 10, 10, 12, cfg);
+  const without = simulateYear(buildSimContext(ref, realSun.monthly, []), 10, 10, 12, cfg);
+  const march = (s: typeof without) => s.monthly.find((m) => m.month === '2026-03')!;
+  assert.ok(march(withOutage).exportKwh < march(without).exportKwh);
+  assert.ok(withOutage.unmetKwh > 0);
+  assert.equal(withOutage.outageEventsUncovered, 1);
+});
+
+test('Quote: placeholder sun profile is flagged', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog });
+  assert.ok(q.warnings.some((w) => w.includes('placeholder')));
+});
+
+test('Quote: bad consumption data is rejected with the row number', () => {
+  const bad = week();
+  bad[10] = { ...bad[10], kWh: NaN };
+  assert.throws(() => calculateQuote({ consumption: bad, sunProfile: realSun }), /row 11/);
+  const dup = week();
+  dup[11] = { ...dup[10] };
+  assert.throws(() => calculateQuote({ consumption: dup, sunProfile: realSun }), /duplicate/);
+  assert.throws(() => calculateQuote({ consumption: week().slice(0, 100), sunProfile: realSun }), /168/);
+});

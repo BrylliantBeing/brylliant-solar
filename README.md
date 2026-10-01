@@ -18,10 +18,14 @@ npm run android    # Android emulator
 ```
 src/
   app/
-    _layout.tsx      root layout, brand navigation theme
-    index.tsx        home — hero, packages, process, proof, FAQ, footer
-    estimate.tsx     the savings estimator
-    book.tsx         free-survey booking form
+    _layout.tsx      root layout: (site) and internal side by side
+    (site)/          the public website (the group doesn't change URLs)
+      index.tsx      home — hero, packages, process, proof, FAQ, footer
+      estimate.tsx   the savings estimator
+      book.tsx       free-survey booking form
+    internal/        staff-only pages behind sign-in — see "Internal pages"
+      quote.tsx      hybrid quote calculator (calculator/ engine)
+      saved.tsx      saved quotes (MySQL via api/quotes.php)
   components/
     brand-mark.tsx   the Vinta Sun logo, drawn with Views (no SVG dependency)
     themed-text.tsx  the type scale
@@ -85,3 +89,46 @@ first three installations.
 The app is light-only, matching the website. The dark palette is already defined
 in `src/constants/theme.ts`; set `FORCE_LIGHT = false` in `src/hooks/use-theme.ts`
 and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
+
+## Internal pages (/internal)
+
+Staff tools: a dashboard, the hybrid quote calculator, and status checks
+(dashboard and status are placeholders for now).
+
+All server settings are **environment variables in hPanel** (your site ->
+Environment variables), never in git:
+
+| Variable | Value |
+|---|---|
+| `STAFF_USERS` | staff accounts, one entry per person from `npm run staff:hash`, joined with `;` |
+| `DB_NAME` | the MySQL database name (`u327442596_solar`) |
+| `DB_USER` | the MySQL user |
+| `DB_PASSWORD` | the MySQL user's password |
+| `DB_HOST` | optional, defaults to `localhost` |
+
+Hostinger gives these to the build, not to PHP, so `npm run build:web` ends with
+`scripts/write-server-env.js`, which writes them to `dist/api/lib/env.php`
+(blocked from the web by `api/lib/.htaccess`). **Hostinger's build command must
+be `npm run build:web`, and after changing a variable you must redeploy** so the
+build writes the new value.
+
+**Sign-in is a PHP session**, not client-side state: `public/api/auth.php`
+checks passwords against `STAFF_USERS`. To add someone, run `npm run staff:hash`,
+type their username, name and password (hidden), and append the printed
+`username:Name:hash` line to `STAFF_USERS` with a `;`. Remove an entry and
+redeploy to revoke access; sessions also end after 2 h idle or 12 h.
+
+**Saved quotes live in MySQL.** `public/api/lib/db.php` creates the `quotes`
+table on first use. Each row keeps the uploaded CSVs, the assumptions and the
+calculated result, so a quote reopens exactly as it was saved.
+
+Any future internal API (dashboards, status) must start with
+`require __DIR__ . '/lib/staff-session.php'; require_staff();` — the page gate
+alone hides the UI but cannot protect data.
+
+In `npm run web` there is no PHP, so the sign-in screen offers a
+"Continue as local dev" button. It only exists in development builds.
+
+Known limit: the site ships as one JS bundle, so the calculator code and its
+default prices (`ZAMBOANGA_DEFAULTS`) are downloadable by anyone who digs into
+the public bundle. Move prices behind a `require_staff()` API if that matters.
