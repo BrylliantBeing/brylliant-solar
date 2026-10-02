@@ -66,9 +66,11 @@ export interface QuoteDefaults {
   targetReduction: number;          // 0.95 = 95% bill reduction
   batteryReserve: number;           // 0.4 = 40% kept back in normal operation
   outagePercentile: number;         // 0.8 = 80th percentile
+  minAfterSunsetHours: number;      // typical runtime an outage starting after sunset must reach; 0 = off
   systemLossFactor: number;         // 1 = no losses; ~0.8 = 20% losses
   batteryRoundTripEfficiency: number; // 1 = lossless; ~0.9 typical lithium
   minBatteryUnits: number;          // floor for a hybrid quote
+  maxBatteryUnits: number;          // search ceiling for battery sizing
   reserveAppliesDuringOutages: boolean; // true = reserve is never used, even in outages
   creditRollover: boolean;          // unused export credit carries to next month
   maxDcAcRatio: number;             // warn above this panel kW / inverter kW
@@ -107,11 +109,26 @@ export interface OutageRuntime {
   medianStartKwh: number;
 }
 
+/** What set the battery size: the largest of these wins */
+export type BatterySizedBy = 'minimum' | 'outage needs' | 'outage coverage' | 'evening runtime';
+
 export interface QuoteResult {
   battery: {
-    requiredKwh: number;        // 80th percentile of outage needs
+    requiredKwh: number;        // 80th percentile of outage needs, each starting from a full battery
     sizingKwh: number;          // requiredKwh, or requiredKwh / (1 − reserve) if the reserve is untouchable
     units: number;
+    /** Units each sizing rule asks for; null if the rule could not be met within maxBatteryUnits */
+    unitsFor: {
+      minimum: number;
+      outageNeeds: number;
+      /** Covers outagePercentile of the outages in the simulated year, from the charge normal use leaves */
+      outageCoverage: number | null;
+      /** Typical after-sunset runtime reaches minAfterSunsetHours */
+      eveningRuntime: number | null;
+    };
+    sizedBy: BatterySizedBy;
+    /** minAfterSunsetHours the battery was sized for; 0 = no target */
+    afterSunsetTargetHours: number;
     installedKwh: number;
     dailyUsableKwh: number;     // installed × (1 − reserve)
     outagesAnalyzed: number;
@@ -211,9 +228,11 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   targetReduction: 0.95,
   batteryReserve: 0.4,
   outagePercentile: 0.8,
+  minAfterSunsetHours: 3,
   systemLossFactor: 1,
   batteryRoundTripEfficiency: 1,
   minBatteryUnits: 1,
+  maxBatteryUnits: 20,
   reserveAppliesDuringOutages: false,
   creditRollover: true,
   maxDcAcRatio: 1.3,
@@ -930,14 +949,65 @@ function outageNeedKwh(
   return peak;
 }
 
+/** The panels and inverters a battery is sized against. */
+interface SizingSystem { ctx: SimContext; systemKw: number; inverterKw: number }
+
+/**
+ * Battery units: the most that any rule asks for.
+ *  - minimum: cfg.minBatteryUnits
+ *  - outage needs: the outagePercentile of historical outage needs, each from a full battery
+ *  - outage coverage: the simulated year covers outagePercentile of its outages. Unlike the
+ *    needs rule, each outage starts from the charge normal use leaves, which is often far
+ *    from full in the evening.
+ *  - evening runtime: an outage starting after sunset typically lasts minAfterSunsetHours
+ * The last two need the panel system, so the first round (no panels yet) skips them.
+ */
 function sizeBattery(
-  outages: ParsedOutage[], ref: ReferenceWeek, sun: number[][], systemKw: number, cfg: QuoteDefaults,
+  outages: ParsedOutage[], ref: ReferenceWeek, sun: number[][], cfg: QuoteDefaults, system?: SizingSystem,
 ) {
+  const systemKw = system?.systemKw ?? 0;
   const needs = outages.map((o) => outageNeedKwh(o, ref, sun, systemKw, cfg));
   const requiredKwh = needs.length ? percentile(needs, cfg.outagePercentile) : 0;
   const sizingKwh = cfg.reserveAppliesDuringOutages ? requiredKwh / (1 - cfg.batteryReserve) : requiredKwh;
-  const units = Math.max(cfg.minBatteryUnits, Math.ceil(sizingKwh / cfg.batteryUnitKwh - 1e-9));
-  return { needs, requiredKwh, sizingKwh, units, installedKwh: units * cfg.batteryUnitKwh };
+  const unitsFor: QuoteResult['battery']['unitsFor'] = {
+    minimum: cfg.minBatteryUnits,
+    outageNeeds: Math.ceil(sizingKwh / cfg.batteryUnitKwh - 1e-9),
+    outageCoverage: null,
+    eveningRuntime: null,
+  };
+  let units = Math.max(unitsFor.minimum, unitsFor.outageNeeds);
+
+  if (system) {
+    const { ctx } = system;
+    const wantCoverage = ctx.outageCount > 0;
+    const wantRuntime = cfg.minAfterSunsetHours > 0;
+    const sunset = runtimeStartHours(sun).sunset;
+    // Coverage and runtime both grow with the battery, so the first size that meets each is the answer.
+    for (let n = 0; n <= cfg.maxBatteryUnits; n++) {
+      const kwh = n * cfg.batteryUnitKwh;
+      const socTrace: number[] = [];
+      const sim = simulateYear(ctx, system.systemKw, kwh, system.inverterKw, cfg, socTrace);
+      if (unitsFor.outageCoverage === null && (!wantCoverage ||
+        sim.outageEvents - sim.outageEventsUncovered >= cfg.outagePercentile * sim.outageEvents - 1e-9)) {
+        unitsFor.outageCoverage = n;
+      }
+      if (unitsFor.eveningRuntime === null && (!wantRuntime ||
+        outageRuntime(sunset, ctx, socTrace, ref, sun, system.systemKw, kwh, system.inverterKw, cfg).medianHours >=
+          cfg.minAfterSunsetHours)) {
+        unitsFor.eveningRuntime = n;
+      }
+      if (unitsFor.outageCoverage !== null && unitsFor.eveningRuntime !== null) break;
+    }
+    units = Math.max(units, unitsFor.outageCoverage ?? 0, unitsFor.eveningRuntime ?? 0);
+  }
+
+  // On a tie, the rule listed last above is named.
+  const sizedBy: BatterySizedBy =
+    units === unitsFor.eveningRuntime ? 'evening runtime'
+      : units === unitsFor.outageCoverage ? 'outage coverage'
+        : units === unitsFor.outageNeeds ? 'outage needs'
+          : 'minimum';
+  return { needs, requiredKwh, sizingKwh, units, unitsFor, sizedBy, installedKwh: units * cfg.batteryUnitKwh };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1220,6 +1290,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   }
   if (cfg.inverterKw <= 0) throw new Error('inverterKw must be above 0.');
   if (cfg.inverterMaxPanels < 1) throw new Error('inverterMaxPanels must be at least 1.');
+  if (cfg.maxBatteryUnits < cfg.minBatteryUnits) throw new Error('maxBatteryUnits must be at least minBatteryUnits.');
 
   // Sun data
   const sunProfile = normalizeSunProfile(sunInput);
@@ -1251,7 +1322,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   }
   if (outagesSkipped > 0) warnings.push(`${outagesSkipped} outage records could not be read and were skipped.`);
   if (outages.length === 0) {
-    warnings.push(`No outage data. Battery set to the minimum of ${cfg.minBatteryUnits} unit(s).`);
+    warnings.push('No outage data. The battery is sized by the minimum units and the after-sunset runtime only.');
   }
 
   // Inverters for the load: peak one-hour consumption, units in parallel. More may be
@@ -1270,13 +1341,18 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
 
   // Battery ↔ panel iteration: battery depends on panel output during outages,
   // panel count depends on the battery's daily usable capacity.
-  let battery = sizeBattery(outages, ref, sun, 0, cfg);
+  const systemFor = (count: number): SizingSystem => ({
+    ctx,
+    systemKw: (count * cfg.panelWatts) / 1000,
+    inverterKw: inverterCountFor(count, countForLoad, cfg) * cfg.inverterKw,
+  });
+  let battery = sizeBattery(outages, ref, sun, cfg);
   let panels = sizePanels(ctx, battery.installedKwh, countForLoad, cfg);
   const seen = new Map<number, number>([[battery.installedKwh, panels]]);
   let converged = false;
   let iterations = 1;
   for (; iterations <= MAX_ITERATIONS; iterations++) {
-    const next = sizeBattery(outages, ref, sun, (panels * cfg.panelWatts) / 1000, cfg);
+    const next = sizeBattery(outages, ref, sun, cfg, systemFor(panels));
     if (next.installedKwh === battery.installedKwh) { battery = next; converged = true; break; }
     if (seen.has(next.installedKwh)) {
       // Oscillating between sizes: take the larger battery and its panel count.
@@ -1292,6 +1368,18 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     seen.set(battery.installedKwh, panels);
   }
   if (!converged) warnings.push(`Battery and panel sizing did not settle after ${MAX_ITERATIONS} rounds.`);
+  if (battery.unitsFor.outageCoverage === null) {
+    warnings.push(
+      `Even ${cfg.maxBatteryUnits} battery units do not cover ${cfg.outagePercentile * 100}% of the outages in the ` +
+      'simulated year. The load during some outages may exceed the inverter capacity.',
+    );
+  }
+  if (battery.unitsFor.eveningRuntime === null) {
+    warnings.push(
+      `Even ${cfg.maxBatteryUnits} battery units do not keep the load running for ${cfg.minAfterSunsetHours} h ` +
+      'after sunset. The evening load may exceed the inverter capacity; consider backing up essential loads only.',
+    );
+  }
 
   const systemKw = (panels * cfg.panelWatts) / 1000;
   const countForPanels = Math.ceil(panels / cfg.inverterMaxPanels - 1e-9);
@@ -1311,7 +1399,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   if (sim.outageEventsUncovered > 0) {
     warnings.push(
       `${sim.outageEventsUncovered} of ${sim.outageEvents} outages in the simulated year were not fully covered ` +
-      `(${round2(sim.unmetKwh)} kWh unmet). That is expected near the ${cfg.outagePercentile * 100}th-percentile cut-off.`,
+      `(${round2(sim.unmetKwh)} kWh unmet). The battery is sized to cover ${cfg.outagePercentile * 100}% of them.`,
     );
   }
 
@@ -1333,6 +1421,11 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     'Short peaks within an hour can be higher than the hourly figure.',
   );
   notes.push(`Battery starts the simulated year at the ${cfg.batteryReserve * 100}% reserve level.`);
+  notes.push(
+    `The battery is the largest of: the minimum (${cfg.minBatteryUnits}), the ${cfg.outagePercentile * 100}th ` +
+    `percentile of outage needs, covering ${cfg.outagePercentile * 100}% of the simulated year's outages, and a ` +
+    `typical ${cfg.minAfterSunsetHours} h runtime after sunset. Here it was set by the ${battery.sizedBy} rule.`,
+  );
   notes.push(
     'Outage runtimes start from the battery charge normal operation leaves at that hour, ' +
     `are repeated on every day of the simulated year, and stop counting at ${RUNTIME_CAP_HOURS} hours.`,
@@ -1358,6 +1451,9 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       requiredKwh: round2(battery.requiredKwh),
       sizingKwh: round2(battery.sizingKwh),
       units: battery.units,
+      unitsFor: battery.unitsFor,
+      sizedBy: battery.sizedBy,
+      afterSunsetTargetHours: cfg.minAfterSunsetHours,
       installedKwh: battery.installedKwh,
       dailyUsableKwh: round2(battery.installedKwh * (1 - cfg.batteryReserve)),
       outagesAnalyzed: outages.length,
@@ -1436,5 +1532,5 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
 /** Exposed for unit tests only. Not part of the public API. */
 export const __test = {
   outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear, sizePanels,
-  batteryRuntimeHours, runtimeStartHours,
+  batteryRuntimeHours, runtimeStartHours, sizeBattery,
 };

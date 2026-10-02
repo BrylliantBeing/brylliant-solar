@@ -301,11 +301,61 @@ test('Quote: meets 95%, and one panel fewer would not', () => {
   assert.equal(q.simulation.start, '2025-09-01T00:00:00');
 });
 
-test('Quote: battery is the 80th percentile of outage needs, rounded up to 10 kWh units', () => {
+test('Quote: battery is the largest of minimum, outage needs, outage coverage and evening runtime', () => {
   const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  const u = q.battery.unitsFor;
   assert.equal(q.battery.requiredKwh, q.battery.needStats.p80);
-  assert.equal(q.battery.units, Math.max(1, Math.ceil(q.battery.requiredKwh / 10 - 1e-9)));
+  assert.equal(u.outageNeeds, Math.ceil(q.battery.requiredKwh / 10 - 1e-9));
+  assert.equal(q.battery.units, Math.max(u.minimum, u.outageNeeds, u.outageCoverage!, u.eveningRuntime!));
   assert.equal(q.battery.outagesAnalyzed, 5); // every outage counts, whatever year it was in
+  // Needs assume a full battery; in the evening it is not, so coverage asks for more here.
+  assert.ok(u.outageCoverage! > u.outageNeeds, JSON.stringify(u));
+  assert.equal(q.battery.sizedBy, 'outage coverage');
+});
+
+test('Quote: the simulated year covers the outage percentile, and one unit fewer would not', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, minAfterSunsetHours: 0 });
+  const { eventsFullyCovered, eventsInSimulatedYear } = q.outageCoverage;
+  assert.ok(eventsFullyCovered >= 0.8 * eventsInSimulatedYear);
+  const ref = refFrom(week());
+  const parsed = outageLog.map((o) => ({ start: parseZamboangaDateTime(o.start), end: parseZamboangaDateTime(o.end) }));
+  const ctx = buildSimContext(ref, realSun.monthly, parsed);
+  const fewer = simulateYear(ctx, q.panels.systemKw, q.battery.installedKwh - 10, q.inverter.totalKw, cfg);
+  assert.ok(fewer.outageEvents - fewer.outageEventsUncovered < 0.8 * fewer.outageEvents);
+});
+
+// Heavy evening load (air-con): 8 kWh an hour from 18:00 to 23:00.
+const heavyEvenings = () => readings('2026-09-01 00:00', 168, (_d, h) => (h >= 18 && h < 23 ? 8 : h >= 9 && h < 17 ? 1.2 : 0.6));
+
+test('Quote: the battery grows until a typical outage after sunset lasts minAfterSunsetHours', () => {
+  const off = calculateQuote({ consumption: heavyEvenings(), sunProfile: realSun, minAfterSunsetHours: 0 });
+  const on = calculateQuote({ consumption: heavyEvenings(), sunProfile: realSun, minAfterSunsetHours: 3 });
+  assert.ok(off.outageRuntime.afterSunset.medianHours < 3, JSON.stringify(off.outageRuntime.afterSunset));
+  assert.ok(on.outageRuntime.afterSunset.medianHours >= 3, JSON.stringify(on.outageRuntime.afterSunset));
+  assert.ok(on.battery.units > off.battery.units);
+  assert.equal(on.battery.sizedBy, 'evening runtime');
+  assert.equal(on.battery.afterSunsetTargetHours, 3);
+  // One unit fewer, with the same panels and inverters, falls short of the target.
+  const ref = refFrom(heavyEvenings());
+  const ctx = buildSimContext(ref, realSun.monthly, []);
+  const kwh = on.battery.installedKwh - 10;
+  const trace: number[] = [];
+  simulateYear(ctx, on.panels.systemKw, kwh, on.inverter.totalKw, cfg, trace);
+  const runtimes: number[] = [];
+  for (let day = ctx.start; day < ctx.end; day += 86400000) {
+    const at = day + on.outageRuntime.afterSunset.startHour * 3600000;
+    runtimes.push(batteryRuntimeHours(at, trace[(at - ctx.start) / 3600000], ref, realSun.monthly, on.panels.systemKw, kwh, on.inverter.totalKw, cfg));
+  }
+  runtimes.sort((a, b) => a - b);
+  const mid = (runtimes.length - 1) / 2;
+  assert.ok((runtimes[Math.floor(mid)] + runtimes[Math.ceil(mid)]) / 2 < 3);
+});
+
+test('Quote: a runtime target the battery ceiling cannot reach is warned about, not forced', () => {
+  const q = calculateQuote({ consumption: heavyEvenings(), sunProfile: realSun, minAfterSunsetHours: 3, maxBatteryUnits: 1 });
+  assert.equal(q.battery.unitsFor.eveningRuntime, null);
+  assert.equal(q.battery.units, 1);
+  assert.ok(q.warnings.some((w) => w.includes('after sunset')), JSON.stringify(q.warnings));
 });
 
 test('Quote: no outage data gives one battery unit and a warning', () => {
@@ -352,9 +402,11 @@ test('Quote: battery lasts longer when the outage starts at peak sun than after 
   assert.ok(afterSunset.medianStartKwh <= q.battery.installedKwh);
 });
 
-test('Quote: placeholder sun profile is flagged', () => {
-  const q = calculateQuote({ consumption: week(), outages: outageLog });
+test('Quote: placeholder sun profile is flagged, the built-in profile is not', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: { ...realSun, isPlaceholder: true } });
   assert.ok(q.warnings.some((w) => w.includes('placeholder')));
+  const builtIn = calculateQuote({ consumption: week(), outages: outageLog });
+  assert.ok(!builtIn.warnings.some((w) => w.includes('placeholder')));
 });
 
 test('Quote: bad consumption data is rejected with the row number', () => {

@@ -674,7 +674,17 @@ function Results({
               value={`${num(q.battery.needStats.median, 1)} kWh`}
               sub={`median · min ${num(q.battery.needStats.min, 1)} · max ${num(q.battery.needStats.max, 1)}`}
             />
-            <KeyValue label="Sized for (percentile)" value={`${num(q.battery.requiredKwh, 1)} kWh`} />
+            <KeyValue label="Sized for (percentile)" value={`${num(q.battery.requiredKwh, 1)} kWh`} sub="each outage from a full battery" />
+            {q.battery.unitsFor ? (
+              <KeyValue
+                label="Battery set by"
+                value={q.battery.sizedBy}
+                sub={
+                  `units for needs ${q.battery.unitsFor.outageNeeds} · coverage ${q.battery.unitsFor.outageCoverage ?? 'n/a'} · ` +
+                  `${num(q.battery.afterSunsetTargetHours, 1)} h after sunset ${q.battery.unitsFor.eveningRuntime ?? 'n/a'}`
+                }
+              />
+            ) : null}
             {q.outageRuntime
               ? ([
                 ['peak sun', q.outageRuntime.peakSun],
