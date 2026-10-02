@@ -52,11 +52,13 @@ export interface SunOutputRow {
 export interface QuoteDefaults {
   electricityRate: number;          // PHP/kWh paid on import
   generationCharge: number;         // PHP/kWh credited on export
-  panelPrice: number;               // PHP per panel
+  usdToPhp: number;                 // PHP per USD, converts the USD hardware prices
+  panelPriceUsd: number;            // USD per panel
   panelWatts: number;               // W per panel
-  inverterPrice: number;            // PHP per inverter
+  inverterPriceUsd: number;         // USD per inverter
   inverterKw: number;               // kW per inverter (paralleled)
-  batteryPrice: number;             // PHP per battery unit
+  inverterMaxPanels: number;        // panels one inverter's PV inputs can take
+  batteryPriceUsd: number;          // USD per battery unit
   batteryUnitKwh: number;           // kWh per battery unit
   laborCost: number;                // PHP per job
   mountingCablingRate: number;      // fraction of (panels + batteries + inverters)
@@ -114,6 +116,11 @@ export interface QuoteResult {
     totalKw: number;
     peakHourlyLoadKwh: number;
     dcAcRatio: number;
+    maxPanelsEach: number;
+    /** Inverters the peak load alone needs */
+    countForLoad: number;
+    /** Inverters the panel count alone needs */
+    countForPanels: number;
   };
   simulation: {
     start: string;
@@ -144,7 +151,11 @@ export interface QuoteResult {
     unusedCreditAtYearEnd: number;
     monthly: MonthlyBill[];
   };
+  /** PHP, hardware converted from USD at usdToPhp */
   pricing: {
+    usdToPhp: number;
+    /** Hardware in USD, as the supplier prices it */
+    usd: { panels: number; inverters: number; batteries: number };
     panels: number;
     inverters: number;
     batteries: number;
@@ -166,11 +177,13 @@ export interface QuoteResult {
 export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   electricityRate: 13.4668,
   generationCharge: 8.47,
-  panelPrice: 5173.96,
+  usdToPhp: 62.83, // fallback; the app fills in the live rate
+  panelPriceUsd: 82.2, // Jinko JKM720N-66HL5-BDV
   panelWatts: 720,
-  inverterPrice: 44366.12,
+  inverterPriceUsd: 720, // Growatt SPE12000ES
   inverterKw: 12,
-  batteryPrice: 61237.75,
+  inverterMaxPanels: 20, // 2 strings of 10: 10 × 49.04 V Voc = 490 V, under the 550 V input limit
+  batteryPriceUsd: 980,
   batteryUnitKwh: 10,
   laborCost: 20625,
   mountingCablingRate: 0.4,
@@ -1069,12 +1082,21 @@ function simulateYear(
   };
 }
 
-/** Fewest panels whose simulated annual bill is at most (1 − target) of the bill without solar. */
+/** Inverters for a panel count: enough for the peak load, and enough PV inputs for every panel. */
+function inverterCountFor(panels: number, countForLoad: number, cfg: QuoteDefaults): number {
+  return Math.max(countForLoad, Math.ceil(panels / cfg.inverterMaxPanels - 1e-9));
+}
+
+/**
+ * Fewest panels whose simulated annual bill is at most (1 − target) of the bill without solar.
+ * Each candidate is simulated with the inverters it needs, so extra panels bring their own inverter.
+ */
 function sizePanels(
-  ctx: SimContext, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
+  ctx: SimContext, batteryKwh: number, countForLoad: number, cfg: QuoteDefaults,
 ): number {
   const kw = (count: number) => (count * cfg.panelWatts) / 1000;
   const meets = (count: number) => {
+    const inverterKw = inverterCountFor(count, countForLoad, cfg) * cfg.inverterKw;
     const sim = simulateYear(ctx, kw(count), batteryKwh, inverterKw, cfg);
     return sim.billAfter <= sim.baseline * (1 - cfg.targetReduction) + 1e-6;
   };
@@ -1107,6 +1129,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   if (cfg.batteryRoundTripEfficiency <= 0 || cfg.batteryRoundTripEfficiency > 1) {
     throw new Error('batteryRoundTripEfficiency must be above 0 and at most 1.');
   }
+  if (cfg.inverterKw <= 0) throw new Error('inverterKw must be above 0.');
+  if (cfg.inverterMaxPanels < 1) throw new Error('inverterMaxPanels must be at least 1.');
 
   // Sun data
   const sunProfile = normalizeSunProfile(sunInput);
@@ -1141,10 +1165,10 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     warnings.push(`No outage data. Battery set to the minimum of ${cfg.minBatteryUnits} unit(s).`);
   }
 
-  // Inverters: peak one-hour consumption, 12 kW units in parallel
+  // Inverters for the load: peak one-hour consumption, units in parallel. More may be
+  // added once the panel count is known, since each inverter takes a limited number of panels.
   const peakHourlyLoadKwh = maxOf([...byHour.values()]);
-  const inverterCount = Math.max(1, Math.ceil(peakHourlyLoadKwh / cfg.inverterKw - 1e-9));
-  const inverterTotalKw = inverterCount * cfg.inverterKw;
+  const countForLoad = Math.max(1, Math.ceil(peakHourlyLoadKwh / cfg.inverterKw - 1e-9));
 
   // Simulated year
   const ctx = buildSimContext(ref, sun, outages);
@@ -1158,7 +1182,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   // Battery ↔ panel iteration: battery depends on panel output during outages,
   // panel count depends on the battery's daily usable capacity.
   let battery = sizeBattery(outages, ref, sun, 0, cfg);
-  let panels = sizePanels(ctx, battery.installedKwh, inverterTotalKw, cfg);
+  let panels = sizePanels(ctx, battery.installedKwh, countForLoad, cfg);
   const seen = new Map<number, number>([[battery.installedKwh, panels]]);
   let converged = false;
   let iterations = 1;
@@ -1175,12 +1199,15 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       break;
     }
     battery = next;
-    panels = sizePanels(ctx, battery.installedKwh, inverterTotalKw, cfg);
+    panels = sizePanels(ctx, battery.installedKwh, countForLoad, cfg);
     seen.set(battery.installedKwh, panels);
   }
   if (!converged) warnings.push(`Battery and panel sizing did not settle after ${MAX_ITERATIONS} rounds.`);
 
   const systemKw = (panels * cfg.panelWatts) / 1000;
+  const countForPanels = Math.ceil(panels / cfg.inverterMaxPanels - 1e-9);
+  const inverterCount = inverterCountFor(panels, countForLoad, cfg);
+  const inverterTotalKw = inverterCount * cfg.inverterKw;
   const sim = simulateYear(ctx, systemKw, battery.installedKwh, inverterTotalKw, cfg);
   const reductionPercent = sim.baseline > 0 ? (1 - sim.billAfter / sim.baseline) * 100 : 0;
 
@@ -1205,13 +1232,23 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     'changes in load (e.g. more air-conditioning in April–May) are not captured.',
   );
   notes.push('Billing uses the reference week (the highest-consumption day per weekday), so the "before" bill is an upper estimate.');
-  notes.push('Inverters are sized on the highest hourly kWh. Short peaks within an hour can be higher.');
+  notes.push(
+    `Inverters cover the highest hourly kWh and take at most ${cfg.inverterMaxPanels} panels each ` +
+    `(${countForPanels > countForLoad ? 'the panel count' : 'the load'} set the number here). ` +
+    'Short peaks within an hour can be higher than the hourly figure.',
+  );
   notes.push(`Battery starts the simulated year at the ${cfg.batteryReserve * 100}% reserve level.`);
 
-  // Pricing
-  const panelCost = panels * cfg.panelPrice;
-  const inverterCost = inverterCount * cfg.inverterPrice;
-  const batteryCost = battery.units * cfg.batteryPrice;
+  // Pricing: supplier hardware in USD, converted to PHP; labour and misc are already PHP.
+  if (!(cfg.usdToPhp > 0)) throw new Error('usdToPhp must be above 0.');
+  const usd = {
+    panels: panels * cfg.panelPriceUsd,
+    inverters: inverterCount * cfg.inverterPriceUsd,
+    batteries: battery.units * cfg.batteryPriceUsd,
+  };
+  const panelCost = usd.panels * cfg.usdToPhp;
+  const inverterCost = usd.inverters * cfg.usdToPhp;
+  const batteryCost = usd.batteries * cfg.usdToPhp;
   const mountingCost = cfg.mountingCablingRate * (panelCost + batteryCost + inverterCost);
   const total = panelCost + inverterCost + batteryCost + mountingCost + cfg.laborCost + cfg.miscCost;
 
@@ -1243,6 +1280,9 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       totalKw: inverterTotalKw,
       peakHourlyLoadKwh: round2(peakHourlyLoadKwh),
       dcAcRatio: round2(dcAcRatio),
+      maxPanelsEach: cfg.inverterMaxPanels,
+      countForLoad,
+      countForPanels,
     },
     simulation: {
       start: formatWallTime(ctx.start),
@@ -1274,6 +1314,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       monthly: sim.monthly,
     },
     pricing: {
+      usdToPhp: cfg.usdToPhp,
+      usd: { panels: round2(usd.panels), inverters: round2(usd.inverters), batteries: round2(usd.batteries) },
       panels: round2(panelCost),
       inverters: round2(inverterCost),
       batteries: round2(batteryCost),

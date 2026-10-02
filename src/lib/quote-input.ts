@@ -237,11 +237,18 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
     title: 'Equipment',
     numbers: [
       { key: 'panelWatts', label: 'Panel rating', unit: 'W' },
-      { key: 'panelPrice', label: 'Panel price', unit: '₱ each' },
+      { key: 'panelPriceUsd', label: 'Panel price', unit: 'US$ each' },
       { key: 'inverterKw', label: 'Inverter rating', unit: 'kW' },
-      { key: 'inverterPrice', label: 'Inverter price', unit: '₱ each' },
+      {
+        key: 'inverterMaxPanels',
+        label: 'Panels per inverter',
+        unit: 'max',
+        help: 'SPE12000ES: 2 strings of 10 × 720 W (490 V Voc, under 550 V)',
+      },
+      { key: 'inverterPriceUsd', label: 'Inverter price', unit: 'US$ each' },
       { key: 'batteryUnitKwh', label: 'Battery unit', unit: 'kWh' },
-      { key: 'batteryPrice', label: 'Battery price', unit: '₱ each' },
+      { key: 'batteryPriceUsd', label: 'Battery price', unit: 'US$ each' },
+      { key: 'usdToPhp', label: 'Exchange rate', unit: '₱ per US$', help: 'Live rate filled in when the page opens' },
     ],
   },
   {
@@ -282,10 +289,13 @@ export function displayValue(field: NumberField, value: number): string {
   return String(Number((value * (field.scale ?? 1)).toPrecision(12)));
 }
 
-export function defaultFieldText(): Record<NumericKey, string> {
-  return Object.fromEntries(
-    NUMBER_FIELDS.map((f) => [f.key, displayValue(f, ZAMBOANGA_DEFAULTS[f.key])]),
-  ) as Record<NumericKey, string>;
+/** Field text for the defaults; pass the live exchange rate to use it instead of the fallback. */
+export function defaultFieldText(usdToPhp?: number): Record<NumericKey, string> {
+  const values: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS, ...(usdToPhp ? { usdToPhp } : {}) };
+  return Object.fromEntries(NUMBER_FIELDS.map((f) => [f.key, displayValue(f, values[f.key])])) as Record<
+    NumericKey,
+    string
+  >;
 }
 
 export function defaultToggles(): Record<BooleanKey, boolean> {
@@ -315,6 +325,8 @@ export function readAssumptions(
 // ─────────────────────────────────────────────────────────────
 
 export const peso = (n: number) => '₱' + Math.round(n).toLocaleString('en-PH');
+export const usd = (n: number) =>
+  'US$' + n.toLocaleString('en-US', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 });
 export const num = (n: number, digits = 0) =>
   n.toLocaleString('en-PH', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 

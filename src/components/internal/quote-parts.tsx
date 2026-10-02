@@ -118,6 +118,138 @@ export function SmallButton({ label, onPress, strong }: { label: string; onPress
   );
 }
 
+/* ---------------- multi-select with search ---------------- */
+
+export type SelectOption = { value: string; label: string; count?: number };
+
+/** Lower case without accents, so "canelar" finds "Cañelar". */
+const fold = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+/**
+ * A dropdown of checkable options with a search box. Nothing selected means
+ * every option applies, which the closed field says with `allLabel`.
+ */
+export function MultiSelect({
+  options,
+  selected,
+  onChange,
+  allLabel,
+  noun,
+  searchPlaceholder = 'Search…',
+}: {
+  options: SelectOption[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  allLabel: string;
+  /** Plural noun for the summary, e.g. "barangays" */
+  noun: string;
+  searchPlaceholder?: string;
+}) {
+  const t = useTheme();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const chosen = new Set(selected);
+  const q = fold(query.trim());
+  const shown = q ? options.filter((o) => fold(o.label).includes(q)) : options;
+
+  const toggle = (value: string) =>
+    onChange(chosen.has(value) ? selected.filter((v) => v !== value) : [...selected, value]);
+  const summary =
+    selected.length === 0 ? allLabel : selected.length <= 2 ? selected.join(', ') : `${selected.length} ${noun} selected`;
+
+  return (
+    <View style={{ gap: Spacing.two }}>
+      <Pressable
+        onPress={() => setOpen((v) => !v)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Choose ${noun}: ${summary}`}
+        style={[styles.select, { borderColor: open ? t.accent : t.lineStrong, backgroundColor: t.background }]}>
+        <ThemedText type="small" numberOfLines={1} style={{ flex: 1, color: selected.length ? t.text : t.textSecondary }}>
+          {summary}
+        </ThemedText>
+        <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 12 }}>
+          {open ? '▴' : '▾'}
+        </ThemedText>
+      </Pressable>
+
+      {selected.length > 0 ? (
+        <View style={styles.row}>
+          {selected.map((v) => (
+            <Pressable
+              key={v}
+              onPress={() => toggle(v)}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${v}`}
+              style={({ pressed }) => [styles.tag, { borderColor: t.accent, backgroundColor: t.backgroundSelected }, pressed && { opacity: 0.7 }]}>
+              <ThemedText type="data" style={{ fontSize: 12 }}>
+                {v} ×
+              </ThemedText>
+            </Pressable>
+          ))}
+          <SmallButton label="Clear" onPress={() => onChange([])} />
+        </View>
+      ) : null}
+
+      {open ? (
+        <View style={[styles.dropdown, { borderColor: t.lineStrong, backgroundColor: t.background }]}>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder={searchPlaceholder}
+            placeholderTextColor={t.textMuted}
+            autoFocus
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel={`Search ${noun}`}
+            style={[styles.search, { color: t.text, borderBottomColor: t.line }]}
+          />
+          <ScrollView style={{ maxHeight: 280 }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+            {shown.map((o) => {
+              const on = chosen.has(o.value);
+              return (
+                <Pressable
+                  key={o.value}
+                  onPress={() => toggle(o.value)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: on }}
+                  style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                    styles.option,
+                    (pressed || hovered) && { backgroundColor: t.backgroundElement },
+                  ]}>
+                  <View style={[styles.check, { borderColor: on ? t.accent : t.lineStrong, backgroundColor: on ? t.accent : 'transparent' }]}>
+                    {on ? <ThemedText style={{ color: t.onAccent, fontSize: 11, lineHeight: 14 }}>✓</ThemedText> : null}
+                  </View>
+                  <ThemedText type="small" style={{ flex: 1 }}>
+                    {o.label}
+                  </ThemedText>
+                  {o.count !== undefined ? (
+                    <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 12 }}>
+                      {o.count}
+                    </ThemedText>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            {shown.length === 0 ? (
+              <ThemedText type="small" themeColor="textMuted" style={{ padding: Spacing.three }}>
+                No {noun} match “{query.trim()}”.
+              </ThemedText>
+            ) : null}
+          </ScrollView>
+          <View style={[styles.dropdownFoot, { borderTopColor: t.line }]}>
+            <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 11, flex: 1 }}>
+              {q ? `${shown.length} of ${options.length}` : `${options.length} ${noun}`}
+              {selected.length ? ` · ${selected.length} selected` : ''}
+            </ThemedText>
+            <SmallButton label="Done" onPress={() => { setOpen(false); setQuery(''); }} />
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 /* ---------------- assumption fields ---------------- */
 
 export function NumberInput({
@@ -273,6 +405,21 @@ const styles = StyleSheet.create({
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
     textAlignVertical: 'top',
   },
+  select: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  tag: { borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.two, paddingVertical: 3 },
+  dropdown: { borderWidth: 1, borderRadius: Radius.sm, overflow: 'hidden' },
+  search: { borderBottomWidth: 1, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, fontSize: 14 },
+  option: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two },
+  check: { width: 16, height: 16, borderWidth: 1, borderRadius: 3, alignItems: 'center', justifyContent: 'center' },
+  dropdownFoot: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderTopWidth: 1, padding: Spacing.two },
   small: { borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two * 0.75 },
   field: { gap: Spacing.one, flexGrow: 1, flexBasis: 160, maxWidth: 260 },
   fieldBox: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.two },

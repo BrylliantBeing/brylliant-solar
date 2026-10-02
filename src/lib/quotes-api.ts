@@ -16,7 +16,8 @@ export type DataSource = { text: string; fileName: string | null };
 export type QuoteInputs = {
   consumption: DataSource;
   outages: DataSource;
-  location: string | null;
+  /** Barangays whose outages are used; empty = all */
+  locations: string[];
   dateOrder: DateOrder | undefined;
   fields: ReturnType<typeof defaultFieldText>;
   toggles: ReturnType<typeof defaultToggles>;

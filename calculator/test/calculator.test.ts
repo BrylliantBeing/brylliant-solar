@@ -258,14 +258,32 @@ const outageLog = [
   { start: '2023-03-27 18:30', end: '2023-03-27 20:00' },
 ];
 
-test('Quote: pricing adds up exactly as specified', () => {
-  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+test('Quote: USD hardware is converted at usdToPhp and the total adds up', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, usdToPhp: 60 });
   const p = q.pricing;
-  assert.equal(p.panels, Math.round(q.panels.count * 5173.96 * 100) / 100);
-  assert.equal(p.inverters, q.inverter.count * 44366.12);
-  assert.equal(p.batteries, Math.round(q.battery.units * 61237.75 * 100) / 100);
-  const hardware = q.panels.count * 5173.96 + q.inverter.count * 44366.12 + q.battery.units * 61237.75;
+  assert.equal(p.usdToPhp, 60);
+  assert.equal(p.usd.panels, Math.round(q.panels.count * 82.2 * 100) / 100);
+  assert.equal(p.usd.inverters, q.inverter.count * 720);
+  assert.equal(p.usd.batteries, q.battery.units * 980);
+  assert.equal(p.panels, Math.round(q.panels.count * 82.2 * 60 * 100) / 100);
+  assert.equal(p.inverters, q.inverter.count * 720 * 60);
+  assert.equal(p.batteries, q.battery.units * 980 * 60);
+  const hardware = (q.panels.count * 82.2 + q.inverter.count * 720 + q.battery.units * 980) * 60;
   assert.ok(Math.abs(p.total - (hardware * 1.4 + 20625 + 1500)) < 0.01);
+});
+
+test('Quote: inverters cover the panel count as well as the load', () => {
+  // Light evening load: one 12 kW inverter covers the power, but the bill needs many panels.
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, inverterMaxPanels: 4 });
+  assert.equal(q.inverter.countForLoad, 1);
+  assert.equal(q.inverter.countForPanels, Math.ceil(q.panels.count / 4));
+  assert.equal(q.inverter.count, Math.max(1, Math.ceil(q.panels.count / 4)));
+  assert.ok(q.inverter.count > 1);
+  assert.equal(q.inverter.maxPanelsEach, 4);
+  // With the default 20 panels each, the same customer needs one inverter.
+  const d = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  assert.ok(d.panels.count <= 20);
+  assert.equal(d.inverter.count, 1);
 });
 
 test('Quote: meets 95%, and one panel fewer would not', () => {

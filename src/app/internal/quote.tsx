@@ -9,7 +9,7 @@ import {
 } from '@calculator/solarQuoteCalculator';
 import { ZAMCELCO_OUTAGES_CSV } from '@calculator/zamcelcoOutages';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
 
 import { InternalPage } from '@/components/internal/internal-page';
@@ -17,6 +17,7 @@ import {
   DataSourceInput,
   KeyValue,
   MessageList,
+  MultiSelect,
   NumberInput,
   Panel,
   SmallButton,
@@ -43,7 +44,9 @@ import {
   readAssumptions,
   sampleConsumptionCsv,
   sampleOutageCsv,
+  usd,
 } from '@/lib/quote-input';
+import { fetchUsdToPhp, type UsdRate } from '@/lib/exchange-rate';
 import { getQuote, manilaTime, saveQuote, type QuoteInputs, type SavedQuoteSummary } from '@/lib/quotes-api';
 
 const EMPTY: DataSource = { text: '', fileName: null };
@@ -56,14 +59,19 @@ const DATE_ORDERS: { label: string; value: DateOrder | undefined }[] = [
 /** Every quote is computed from these, so any change marks the result stale. */
 type Inputs = QuoteInputs;
 
-const freshInputs = (): Inputs => ({
+const freshInputs = (usdToPhp?: number): Inputs => ({
   consumption: EMPTY,
   outages: EMPTY,
-  location: null,
+  locations: [],
   dateOrder: undefined,
-  fields: defaultFieldText(),
+  fields: defaultFieldText(usdToPhp),
   toggles: defaultToggles(),
 });
+
+/** Saved quotes from before multi-select stored one `location`. */
+function savedLocations(inputs: Partial<Inputs> & { location?: string | null }): string[] {
+  return inputs.locations ?? (inputs.location ? [inputs.location] : []);
+}
 
 export default function QuoteCalculator() {
   const t = useTheme();
@@ -71,7 +79,7 @@ export default function QuoteCalculator() {
 
   const { id: idParam } = useLocalSearchParams<{ id?: string }>();
   const [customer, setCustomer] = useState('');
-  const [inputs, setInputs] = useState<Inputs>(freshInputs);
+  const [inputs, setInputs] = useState<Inputs>(() => freshInputs());
   const [showAssumptions, setShowAssumptions] = useState(false);
   const [result, setResult] = useState<{ quote: QuoteResult; inputs: Inputs } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +94,31 @@ export default function QuoteCalculator() {
   /** Set by "Start a new quote" so the old ?id isn't reopened before the URL updates. */
   const [dismissedId, setDismissedId] = useState(0);
 
+  /** Live USD → PHP rate, fetched once when the page opens. */
+  const [liveRate, setLiveRate] = useState<UsdRate | null>(null);
+  const [rateError, setRateError] = useState<string | null>(null);
+  /** True while the inputs came from a saved quote, whose own rate must be kept. */
+  const fromSaved = useRef(false);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    fetchUsdToPhp(abort.signal)
+      .then((r) => {
+        setLiveRate(r);
+        const fallback = defaultFieldText().usdToPhp;
+        // Fill in the live rate unless staff already typed one or a saved quote is open.
+        setInputs((prev) =>
+          fromSaved.current || prev.fields.usdToPhp !== fallback
+            ? prev
+            : { ...prev, fields: { ...prev.fields, usdToPhp: defaultFieldText(r.rate).usdToPhp } },
+        );
+      })
+      .catch((e: Error) => {
+        if (!abort.signal.aborted) setRateError(e.message);
+      });
+    return () => abort.abort();
+  }, []);
+
   // Open a saved quote from /internal/quote?id=12
   const openId = Number(idParam) || 0;
   const loadingId =
@@ -96,7 +129,13 @@ export default function QuoteCalculator() {
     getQuote(loadingId)
       .then((q) => {
         if (!live) return;
-        const loaded: Inputs = { ...freshInputs(), ...q.inputs, fields: { ...defaultFieldText(), ...q.inputs.fields } };
+        const loaded: Inputs = {
+          ...freshInputs(),
+          ...q.inputs,
+          locations: savedLocations(q.inputs),
+          fields: { ...defaultFieldText(), ...q.inputs.fields },
+        };
+        fromSaved.current = true;
         setInputs(loaded);
         setCustomer(q.customer);
         setResult({ quote: q.result, inputs: loaded });
@@ -136,15 +175,21 @@ export default function QuoteCalculator() {
   );
   const outages = useMemo(
     () =>
-      inputs.outages.text.trim() && inputs.location !== null
-        ? parseOutageCsv(inputs.outages.text, { locations: inputs.location, dateOrder: inputs.dateOrder })
+      inputs.outages.text.trim() && inputs.locations.length > 0
+        ? parseOutageCsv(inputs.outages.text, { locations: inputs.locations, dateOrder: inputs.dateOrder })
         : allOutages,
-    [inputs.outages.text, inputs.location, inputs.dateOrder, allOutages],
+    [inputs.outages.text, inputs.locations, inputs.dateOrder, allOutages],
   );
-  const locations = Object.entries(allOutages?.locations ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const locationOptions = useMemo(
+    () =>
+      Object.entries(allOutages?.locations ?? {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => ({ value: name, label: name, count })),
+    [allOutages],
+  );
 
   const assumptions = readAssumptions(inputs.fields, inputs.toggles);
-  const defaults = defaultFieldText();
+  const defaults = defaultFieldText(liveRate?.rate);
   const editedCount =
     NUMBER_FIELDS.filter((f) => inputs.fields[f.key] !== defaults[f.key]).length +
     TOGGLE_FIELDS.filter((f) => inputs.toggles[f.key] !== ZAMBOANGA_DEFAULTS[f.key]).length;
@@ -189,7 +234,7 @@ export default function QuoteCalculator() {
       ...prev,
       consumption: { text: sampleConsumptionCsv(), fileName: null },
       outages: { text: sampleOutageCsv(), fileName: null },
-      location: 'Zamboanga City',
+      locations: ['Zamboanga City'],
     }));
   }
 
@@ -219,7 +264,8 @@ export default function QuoteCalculator() {
   }
 
   function startNew() {
-    setInputs(freshInputs());
+    fromSaved.current = false;
+    setInputs(freshInputs(liveRate?.rate));
     setCustomer('');
     setResult(null);
     setSaved(null);
@@ -302,26 +348,28 @@ export default function QuoteCalculator() {
           <SmallButton
             label="Use ZAMCELCO interruptions"
             onPress={() =>
-              setInputs((prev) => ({ ...prev, outages: { text: ZAMCELCO_OUTAGES_CSV, fileName: 'ZAMCELCO interruptions (built in)' }, location: null }))
+              setInputs((prev) => ({ ...prev, outages: { text: ZAMCELCO_OUTAGES_CSV, fileName: 'ZAMCELCO interruptions (built in)' }, locations: [] }))
             }
           />
         </View>
         <DataSourceInput
           value={inputs.outages}
-          onChange={(v) => setInputs((prev) => ({ ...prev, outages: v, location: null }))}
+          onChange={(v) => setInputs((prev) => ({ ...prev, outages: v, locations: [] }))}
           placeholder={'Location,Datetime Start,Datetime End\nZamboanga City,2026-03-27 16:30,2026-03-27 18:00\n…'}
         />
-        {locations.length > 1 ? (
+        {locationOptions.length > 1 ? (
           <>
             <ThemedText type="eyebrow" themeColor="textMuted">
               Location / barangay
             </ThemedText>
-            <View style={styles.chips}>
-              <Chip label="All" selected={inputs.location === null} onPress={() => set('location', null)} />
-              {locations.map(([name, count]) => (
-                <Chip key={name} label={`${name} (${count})`} selected={inputs.location === name} onPress={() => set('location', name)} />
-              ))}
-            </View>
+            <MultiSelect
+              options={locationOptions}
+              selected={inputs.locations}
+              onChange={(v) => set('locations', v)}
+              allLabel={`All ${locationOptions.length} locations`}
+              noun="barangays"
+              searchPlaceholder="Search barangays…"
+            />
           </>
         ) : null}
         {outages ? (
@@ -403,13 +451,22 @@ export default function QuoteCalculator() {
           </View>
         ) : (
           <ThemedText type="small" themeColor="textMuted">
-            Panels {peso(ZAMBOANGA_DEFAULTS.panelPrice)} × {ZAMBOANGA_DEFAULTS.panelWatts} W · inverter{' '}
-            {peso(ZAMBOANGA_DEFAULTS.inverterPrice)} × {ZAMBOANGA_DEFAULTS.inverterKw} kW · battery{' '}
-            {peso(ZAMBOANGA_DEFAULTS.batteryPrice)} × {ZAMBOANGA_DEFAULTS.batteryUnitKwh} kWh · target{' '}
+            Panel {usd(ZAMBOANGA_DEFAULTS.panelPriceUsd)} × {ZAMBOANGA_DEFAULTS.panelWatts} W · inverter{' '}
+            {usd(ZAMBOANGA_DEFAULTS.inverterPriceUsd)} × {ZAMBOANGA_DEFAULTS.inverterKw} kW (max{' '}
+            {ZAMBOANGA_DEFAULTS.inverterMaxPanels} panels) · battery {usd(ZAMBOANGA_DEFAULTS.batteryPriceUsd)} ×{' '}
+            {ZAMBOANGA_DEFAULTS.batteryUnitKwh} kWh · target{' '}
             {displayValue(NUMBER_FIELDS.find((f) => f.key === 'targetReduction')!, ZAMBOANGA_DEFAULTS.targetReduction)}%
             {editedCount ? ' (defaults shown; your edits apply)' : ''}
           </ThemedText>
         )}
+        <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 11 }}>
+          {`Quote uses ₱${inputs.fields.usdToPhp} per US$. `}
+          {liveRate
+            ? `Live rate ₱${liveRate.rate.toFixed(2)}, ${liveRate.source}, updated ${manilaTime(liveRate.updatedAt)}.`
+            : rateError
+              ? `Live rate unavailable (${rateError}); using the saved fallback. Check it under Show.`
+              : 'Fetching live rate…'}
+        </ThemedText>
       </Panel>
 
       <Button label={busy ? 'Calculating…' : result ? 'Recalculate quote' : 'Calculate quote'} onPress={calculate} tone="sun" full />
@@ -503,6 +560,12 @@ function Results({
   const t = useTheme();
   const { annualSaving, years } = payback(q);
   const hardware = q.pricing.panels + q.pricing.inverters + q.pricing.batteries;
+  // Quotes saved before USD pricing have no rate or USD figures.
+  const fx = q.pricing.usdToPhp ? { rate: q.pricing.usdToPhp, usd: q.pricing.usd } : null;
+  const each = (count: number, php: number, usdTotal?: number) =>
+    usdTotal !== undefined && count
+      ? `${count} × ${usd(usdTotal / count)} = ${usd(usdTotal)}`
+      : `${count} × ${peso(php / Math.max(1, count))}`;
   const monthly = q.bill.monthly;
   const sum = (pick: (m: (typeof monthly)[number]) => number) => monthly.reduce((a, m) => a + pick(m), 0);
 
@@ -527,7 +590,10 @@ function Results({
         <Stat
           label="Inverter"
           value={`${num(q.inverter.totalKw)} kW`}
-          sub={`${q.inverter.count} × ${q.inverter.ratingKwEach} kW · DC/AC ${num(q.inverter.dcAcRatio, 2)}`}
+          sub={
+            `${q.inverter.count} × ${q.inverter.ratingKwEach} kW · DC/AC ${num(q.inverter.dcAcRatio, 2)}` +
+            (q.inverter.maxPanelsEach ? ` · ≤${q.inverter.maxPanelsEach} panels each` : '')
+          }
         />
         <Stat
           label="Battery"
@@ -542,14 +608,17 @@ function Results({
         <Stat label="Saving" value={`${peso(annualSaving)}/yr`} sub={`${peso(annualSaving / 12)} a month on average`} />
       </View>
 
-      <Panel title="Price breakdown">
-        <KeyValue label="Panels" sub={`${q.panels.count} × ${peso(q.pricing.panels / Math.max(1, q.panels.count))}`} value={peso(q.pricing.panels)} />
-        <KeyValue label="Inverters" sub={`${q.inverter.count} × ${peso(q.pricing.inverters / q.inverter.count)}`} value={peso(q.pricing.inverters)} />
+      <Panel title={fx ? `Price breakdown · US$1 = ₱${num(fx.rate, 2)}` : 'Price breakdown'}>
+        <KeyValue label="Panels" sub={each(q.panels.count, q.pricing.panels, fx?.usd.panels)} value={peso(q.pricing.panels)} />
         <KeyValue
-          label="Batteries"
-          sub={q.battery.units ? `${q.battery.units} × ${peso(q.pricing.batteries / q.battery.units)}` : undefined}
-          value={peso(q.pricing.batteries)}
+          label="Inverters"
+          sub={
+            each(q.inverter.count, q.pricing.inverters, fx?.usd.inverters) +
+            (q.inverter.countForPanels > q.inverter.countForLoad ? ` · ${q.inverter.countForPanels} needed for the panels` : '')
+          }
+          value={peso(q.pricing.inverters)}
         />
+        <KeyValue label="Batteries" sub={q.battery.units ? each(q.battery.units, q.pricing.batteries, fx?.usd.batteries) : undefined} value={peso(q.pricing.batteries)} />
         <KeyValue
           label="Mounting & cabling"
           sub={`${num(hardware > 0 ? (q.pricing.mountingCabling / hardware) * 100 : 0)}% of ${peso(hardware)} hardware`}
