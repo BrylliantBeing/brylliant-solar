@@ -446,7 +446,9 @@ export interface OutageParseResult {
   /** Rows that could not be used, with the reason (nothing is dropped silently) */
   skipped: { line: number; reason: string; raw: string }[];
   duplicatesRemoved: number;
-  /** Row count per location in the whole file, before filtering */
+  /** Outages dropped because they fall entirely inside a longer one */
+  overlapsRemoved: number;
+  /** Row count per location (each area of a "A; B" cell) in the whole file, before filtering */
   locations: Record<string, number>;
   dateOrder?: DateOrder;
   firstStart?: string;
@@ -456,8 +458,11 @@ export interface OutageParseResult {
 
 /**
  * Parses the outage history CSV: location, datetime start, datetime end.
- * Works with or without a header row. Location matching ignores case and extra spaces
+ * Works with or without a header row. The location column may be headed "Location" or
+ * "Barangays", and a cell may list several areas separated by ";" ("Baliwasan; Calarian");
+ * a row is used when any of its areas is wanted. Matching ignores case and extra spaces
  * and is exact, so "Zamboanga" does not also match "Zamboanga Sibugay".
+ * An outage entirely inside a longer one is dropped; partial overlaps are kept separate.
  */
 export function parseOutageCsv(
   csvText: string,
@@ -467,7 +472,7 @@ export function parseOutageCsv(
   const warnings: string[] = [];
   const skipped: OutageParseResult['skipped'] = [];
   if (rows.length === 0) {
-    return { outages: [], skipped, duplicatesRemoved: 0, locations: {}, warnings: ['Outage file is empty.'] };
+    return { outages: [], skipped, duplicatesRemoved: 0, overlapsRemoved: 0, locations: {}, warnings: ['Outage file is empty.'] };
   }
 
   // Header row: the start column has no digits.
@@ -482,7 +487,7 @@ export function parseOutageCsv(
     if (find('start') >= 0 && find('end') >= 0) {
       startIdx = find('start');
       endIdx = find('end');
-      locIdx = find('location');
+      locIdx = find('location') >= 0 ? find('location') : find('barangay');
     }
   }
   const dataRows = rows.slice(firstData);
@@ -497,16 +502,19 @@ export function parseOutageCsv(
   const locations: Record<string, number> = {};
   const seen = new Set<string>();
   let duplicatesRemoved = 0;
-  const outages: OutageEvent[] = [];
-  let first = Infinity;
-  let last = -Infinity;
+  let noLocation = 0;
+  const kept: { areas: string[]; start: number; end: number }[] = [];
 
   dataRows.forEach((r, i) => {
     const line = i + firstData + 1;
     const raw = r.join(',');
     const location = locIdx >= 0 ? (r[locIdx] ?? '').trim() : '';
-    if (location) locations[location] = (locations[location] ?? 0) + 1;
-    if (wanted && !wanted.has(normalizeName(location))) return;
+    const areas = location.split(';').map((a) => a.trim()).filter(Boolean);
+    areas.forEach((a) => { locations[a] = (locations[a] ?? 0) + 1; });
+    if (wanted) {
+      if (areas.length === 0) noLocation++;
+      if (!areas.some((a) => wanted.has(normalizeName(a)))) return;
+    }
 
     const startText = r[startIdx]?.trim();
     const endText = r[endIdx]?.trim();
@@ -530,10 +538,26 @@ export function parseOutageCsv(
     const key = `${normalizeName(location)}|${start}|${end}`;
     if (seen.has(key)) { duplicatesRemoved++; return; }
     seen.add(key);
-    first = Math.min(first, start);
-    last = Math.max(last, end);
-    outages.push({ location: location || undefined, start: formatWallTime(start), end: formatWallTime(end) });
+    kept.push({ areas, start, end });
   });
+
+  // An outage entirely inside a longer one adds nothing (isolation and re-tapping inside the
+  // morning's line work). Partial overlaps stay separate: in one barangay they are often
+  // different rotation groups, and joining them would invent an outage no household had.
+  kept.sort((a, b) => a.start - b.start || b.end - a.end);
+  const used: typeof kept = [];
+  let overlapsRemoved = 0;
+  let reach = -Infinity;
+  for (const o of kept) {
+    if (o.end <= reach) { overlapsRemoved++; continue; }
+    used.push(o);
+    reach = o.end;
+  }
+  const outages: OutageEvent[] = used.map((o) => ({
+    location: o.areas.length ? o.areas.join('; ') : undefined,
+    start: formatWallTime(o.start),
+    end: formatWallTime(o.end),
+  }));
 
   if (wanted && outages.length === 0 && skipped.length === 0) {
     warnings.push(
@@ -545,12 +569,15 @@ export function parseOutageCsv(
       `The file has ${Object.keys(locations).length} locations and no filter was set, so all of them are used.`,
     );
   }
+  if (wanted && noLocation > 0) {
+    warnings.push(`${noLocation} rows name no location, so they are left out when a location is picked.`);
+  }
   if (skipped.length > 0) warnings.push(`${skipped.length} outage rows could not be read (see skipped).`);
 
   return {
-    outages, skipped, duplicatesRemoved, locations, dateOrder,
-    firstStart: outages.length ? formatWallTime(first) : undefined,
-    lastEnd: outages.length ? formatWallTime(last) : undefined,
+    outages, skipped, duplicatesRemoved, overlapsRemoved, locations, dateOrder,
+    firstStart: used.length ? formatWallTime(used[0].start) : undefined,
+    lastEnd: used.length ? formatWallTime(reach) : undefined,
     warnings,
   };
 }

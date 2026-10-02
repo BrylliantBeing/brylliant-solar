@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as XLSX from 'xlsx';
 import {
   __test, buildSunProfile, calculateQuote, formatWallTime, HourlyReading, parseOutageCsv,
   parseZamboangaDateTime, QuoteDefaults, SunOutputRow, ZAMBOANGA_DEFAULTS, detectDateOrder,
 } from '../src/solarQuoteCalculator';
+import { ZAMCELCO_OUTAGES_CSV } from '../src/zamcelcoOutages';
 
 const { outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear } = __test;
 const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS };
@@ -149,6 +152,36 @@ test('Outage CSV: header, quoting, BOM, day-first detection, bad rows reported, 
   assert.equal(r.duplicatesRemoved, 1);
   assert.deepEqual(r.skipped.map((s) => s.line), [6, 7]);
   assert.equal(r.locations['Zamboanga Sibugay, Ipil'], 1);
+});
+
+test('Outage CSV: a row listing several barangays matches each; outages inside longer ones are dropped', () => {
+  const csv = 'Barangays,Datetime Start,Datetime End,ZAMCELCO Description\n' +
+    'Baliwasan; Calarian,2026-04-11 05:30,2026-04-11 06:30,isolation\n' +
+    'Baliwasan; Calarian,2026-04-11 10:30,2026-04-11 11:30,re-tapping\n' +
+    'Baliwasan,2026-04-11 05:30,2026-04-11 11:30,"line work, covers both"\n' +
+    'Baliwasan,2026-04-11 17:00,2026-04-12 01:00,rotation group A\n' +
+    'Baliwasan,2026-04-12 01:00,2026-04-12 09:00,"rotation group B, back-to-back: kept apart"\n' +
+    'Calarian,2026-04-12 09:00,2026-04-12 11:00,other barangay\n' +
+    ',2026-04-13 09:00,2026-04-13 10:00,no barangay given\n';
+  const r = parseOutageCsv(csv, { locations: 'baliwasan' });
+  assert.deepEqual(r.outages.map((o) => [o.start, o.end]), [
+    ['2026-04-11T05:30:00', '2026-04-11T11:30:00'],
+    ['2026-04-11T17:00:00', '2026-04-12T01:00:00'],
+    ['2026-04-12T01:00:00', '2026-04-12T09:00:00'],
+  ]);
+  assert.equal(r.overlapsRemoved, 2);
+  assert.equal(r.lastEnd, '2026-04-12T09:00:00');
+  assert.deepEqual(r.locations, { Baliwasan: 5, Calarian: 3 });
+  assert.ok(r.warnings.some((w) => w.includes('1 rows name no location')));
+  assert.equal(parseOutageCsv(csv, { locations: 'Calarian' }).outages.length, 3);
+});
+
+test('Built-in ZAMCELCO list parses cleanly and is current with its CSV', () => {
+  const csv = fs.readFileSync(path.join(__dirname, '..', 'src', 'zamcelcoOutages.csv'), 'utf8');
+  assert.equal(ZAMCELCO_OUTAGES_CSV, csv, 'Run scripts/buildZamcelcoOutages.ts');
+  const r = parseOutageCsv(csv);
+  assert.equal(r.skipped.length, 0);
+  assert.ok(Object.keys(r.locations).length > 50);
 });
 
 test('Outage CSV without a header row uses column order', () => {

@@ -7,6 +7,7 @@ import {
   type DateOrder,
   type QuoteResult,
 } from '@calculator/solarQuoteCalculator';
+import { ZAMCELCO_OUTAGES_CSV } from '@calculator/zamcelcoOutages';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, TextInput, View, useWindowDimensions } from 'react-native';
@@ -140,7 +141,7 @@ export default function QuoteCalculator() {
         : allOutages,
     [inputs.outages.text, inputs.location, inputs.dateOrder, allOutages],
   );
-  const locations = Object.entries(allOutages?.locations ?? {});
+  const locations = Object.entries(allOutages?.locations ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
   const assumptions = readAssumptions(inputs.fields, inputs.toggles);
   const defaults = defaultFieldText();
@@ -294,8 +295,17 @@ export default function QuoteCalculator() {
       <Panel title="2 · Outage history (optional)">
         <ThemedText type="small" themeColor="textSecondary">
           <ThemedText type="code">location,start,end</ThemedText> per outage. Sizes the battery. Without
-          it the quote uses the minimum battery.
+          it the quote uses the minimum battery. A location cell can list several barangays separated by
+          <ThemedText type="code">;</ThemedText>.
         </ThemedText>
+        <View style={styles.chips}>
+          <SmallButton
+            label="Use ZAMCELCO interruptions"
+            onPress={() =>
+              setInputs((prev) => ({ ...prev, outages: { text: ZAMCELCO_OUTAGES_CSV, fileName: 'ZAMCELCO interruptions (built in)' }, location: null }))
+            }
+          />
+        </View>
         <DataSourceInput
           value={inputs.outages}
           onChange={(v) => setInputs((prev) => ({ ...prev, outages: v, location: null }))}
@@ -304,7 +314,7 @@ export default function QuoteCalculator() {
         {locations.length > 1 ? (
           <>
             <ThemedText type="eyebrow" themeColor="textMuted">
-              Location
+              Location / barangay
             </ThemedText>
             <View style={styles.chips}>
               <Chip label="All" selected={inputs.location === null} onPress={() => set('location', null)} />
@@ -321,6 +331,7 @@ export default function QuoteCalculator() {
               <KeyValue label="Period" value={`${outages.firstStart.slice(0, 10)} → ${outages.lastEnd?.slice(0, 10)}`} />
             ) : null}
             {outages.duplicatesRemoved > 0 ? <KeyValue label="Duplicates removed" value={num(outages.duplicatesRemoved)} /> : null}
+            {outages.overlapsRemoved > 0 ? <KeyValue label="Inside a longer outage" value={num(outages.overlapsRemoved)} /> : null}
             <MessageList
               title="Outage file"
               tone="warn"
