@@ -96,6 +96,17 @@ export interface MonthlyBill {
   creditCarriedOut: number; // PHP of unused credit carried to the next month
 }
 
+export interface OutageRuntime {
+  /** Hour of day the outage starts, e.g. 11 = 11:00 */
+  startHour: number;
+  /** Typical hours the battery keeps the load running (median over every day of the simulated year) */
+  medianHours: number;
+  /** Shortest runtime on any day of the simulated year */
+  shortestHours: number;
+  /** Median battery charge (kWh) when the outage starts, from normal operation */
+  medianStartKwh: number;
+}
+
 export interface QuoteResult {
   battery: {
     requiredKwh: number;        // 80th percentile of outage needs
@@ -141,6 +152,15 @@ export interface QuoteResult {
     eventsInSimulatedYear: number;
     eventsFullyCovered: number;
     unmetLoadKwh: number;
+  };
+  /** How long the battery lasts in an outage that starts at a given time of day */
+  outageRuntime: {
+    /** Runtimes stop counting here; a value equal to it means "at least this long" */
+    maxHours: number;
+    /** Outage starts at the hour of highest sun output */
+    peakSun: OutageRuntime;
+    /** Outage starts once sun output has ended for the day */
+    afterSunset: OutageRuntime;
   };
   bill: {
     annualBefore: number;
@@ -202,6 +222,7 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
 
 const MIN_HOURS = 168;
 const MAX_ITERATIONS = 10;
+const RUNTIME_CAP_HOURS = 168; // battery runtimes stop counting after a week
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
 const ZAMBOANGA_OFFSET_MIN = 480; // UTC+8
@@ -992,8 +1013,10 @@ interface SimResult {
   outageEventsUncovered: number;
 }
 
+/** socTrace, if given, receives the battery charge (kWh) at the start of each hour. */
 function simulateYear(
   ctx: SimContext, systemKw: number, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
+  socTrace?: number[],
 ): SimResult {
   const eff = cfg.batteryRoundTripEfficiency;
   const normalFloor = batteryKwh * cfg.batteryReserve;
@@ -1009,6 +1032,7 @@ function simulateYear(
   const uncovered = new Set<number>();
 
   for (const h of ctx.hours) {
+    socTrace?.push(soc);
     const gen = systemKw * h.sunPerKwp * cfg.systemLossFactor;
     solar += gen;
     mLoad[h.monthIdx] += h.load;
@@ -1079,6 +1103,71 @@ function simulateYear(
     creditLeft: cfg.creditRollover ? carry : 0,
     outageEvents: ctx.outageCount,
     outageEventsUncovered: uncovered.size,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Battery runtime in an outage
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Outage start hours from the year-average sun curve: the hour of highest output, and
+ * the first hour after it where output drops under 1% of that peak (sunset).
+ */
+function runtimeStartHours(sun: number[][]): { peak: number; sunset: number } {
+  const avg = Array.from({ length: 24 }, (_, h) => sun.reduce((s, row) => s + row[h], 0) / 12);
+  const peak = avg.indexOf(maxOf(avg));
+  let sunset = peak + 1;
+  while (sunset < 23 && avg[sunset] >= 0.01 * avg[peak]) sunset++;
+  return { peak, sunset };
+}
+
+/**
+ * Hours until the load can no longer be met, for an outage starting at startMs with the
+ * battery at socKwh. Uses the reference-day load and the month's sun, recharges from
+ * surplus solar, and stops at RUNTIME_CAP_HOURS. The last hour is prorated.
+ */
+function batteryRuntimeHours(
+  startMs: number, socKwh: number, ref: ReferenceWeek, sun: number[][],
+  systemKw: number, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
+): number {
+  const eff = cfg.batteryRoundTripEfficiency;
+  const floor = cfg.reserveAppliesDuringOutages ? batteryKwh * cfg.batteryReserve : 0;
+  let soc = socKwh;
+  for (let i = 0; i < RUNTIME_CAP_HOURS; i++) {
+    const p = wallParts(startMs + i * HOUR_MS);
+    const load = ref.hourly[p.weekday][p.hour];
+    const gen = systemKw * sun[p.month - 1][p.hour] * cfg.systemLossFactor;
+    if (gen >= load) {
+      soc += Math.max(0, Math.min(gen - load, inverterKw, (batteryKwh - soc) / eff)) * eff;
+      continue;
+    }
+    const deficit = load - gen;
+    const available = Math.max(0, Math.min(soc - floor, inverterKw));
+    if (available + 1e-9 < deficit) return i + available / deficit;
+    soc -= deficit;
+  }
+  return RUNTIME_CAP_HOURS;
+}
+
+/** Runtime for an outage starting at startHour on every day of the simulated year. */
+function outageRuntime(
+  startHour: number, ctx: SimContext, socTrace: number[], ref: ReferenceWeek, sun: number[][],
+  systemKw: number, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
+): OutageRuntime {
+  const runtimes: number[] = [];
+  const socs: number[] = [];
+  for (let day = ctx.start; day < ctx.end; day += DAY_MS) {
+    const t = day + startHour * HOUR_MS;
+    const soc = socTrace[(t - ctx.start) / HOUR_MS];
+    socs.push(soc);
+    runtimes.push(batteryRuntimeHours(t, soc, ref, sun, systemKw, batteryKwh, inverterKw, cfg));
+  }
+  return {
+    startHour,
+    medianHours: round2(median(runtimes)),
+    shortestHours: round2(Math.min(...runtimes)),
+    medianStartKwh: round2(median(socs)),
   };
 }
 
@@ -1208,7 +1297,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   const countForPanels = Math.ceil(panels / cfg.inverterMaxPanels - 1e-9);
   const inverterCount = inverterCountFor(panels, countForLoad, cfg);
   const inverterTotalKw = inverterCount * cfg.inverterKw;
-  const sim = simulateYear(ctx, systemKw, battery.installedKwh, inverterTotalKw, cfg);
+  const socTrace: number[] = [];
+  const sim = simulateYear(ctx, systemKw, battery.installedKwh, inverterTotalKw, cfg, socTrace);
   const reductionPercent = sim.baseline > 0 ? (1 - sim.billAfter / sim.baseline) * 100 : 0;
 
   const dcAcRatio = systemKw / inverterTotalKw;
@@ -1225,6 +1315,11 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     );
   }
 
+  // Battery runtime for an outage at peak sun and just after sunset
+  const startHours = runtimeStartHours(sun);
+  const runtimeAt = (hour: number) =>
+    outageRuntime(hour, ctx, socTrace, ref, sun, systemKw, battery.installedKwh, inverterTotalKw, cfg);
+
   // Notes
   const recorded = ref.recordedMonths.map((m) => MONTH_LABELS[m]).join(', ');
   notes.push(
@@ -1238,6 +1333,10 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     'Short peaks within an hour can be higher than the hourly figure.',
   );
   notes.push(`Battery starts the simulated year at the ${cfg.batteryReserve * 100}% reserve level.`);
+  notes.push(
+    'Outage runtimes start from the battery charge normal operation leaves at that hour, ' +
+    `are repeated on every day of the simulated year, and stop counting at ${RUNTIME_CAP_HOURS} hours.`,
+  );
 
   // Pricing: supplier hardware in USD, converted to PHP; labour and misc are already PHP.
   if (!(cfg.usdToPhp > 0)) throw new Error('usdToPhp must be above 0.');
@@ -1304,6 +1403,11 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       eventsFullyCovered: sim.outageEvents - sim.outageEventsUncovered,
       unmetLoadKwh: round2(sim.unmetKwh),
     },
+    outageRuntime: {
+      maxHours: RUNTIME_CAP_HOURS,
+      peakSun: runtimeAt(startHours.peak),
+      afterSunset: runtimeAt(startHours.sunset),
+    },
     bill: {
       annualBefore: round2(sim.baseline),
       annualAfter: round2(sim.billAfter),
@@ -1332,4 +1436,5 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
 /** Exposed for unit tests only. Not part of the public API. */
 export const __test = {
   outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear, sizePanels,
+  batteryRuntimeHours, runtimeStartHours,
 };

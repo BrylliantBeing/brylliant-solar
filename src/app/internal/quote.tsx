@@ -37,6 +37,8 @@ import {
   displayValue,
   consumptionXlsxToCsv,
   num,
+  runtimeLabel,
+  runtimeText,
   parseConsumptionCsv,
   payback,
   peso,
@@ -673,6 +675,22 @@ function Results({
               sub={`median · min ${num(q.battery.needStats.min, 1)} · max ${num(q.battery.needStats.max, 1)}`}
             />
             <KeyValue label="Sized for (percentile)" value={`${num(q.battery.requiredKwh, 1)} kWh`} />
+            {q.outageRuntime
+              ? ([
+                ['peak sun', q.outageRuntime.peakSun],
+                ['after sunset', q.outageRuntime.afterSunset],
+              ] as const).map(([when, r]) => (
+                <KeyValue
+                  key={when}
+                  label={`${runtimeLabel(r.startHour)} (${when})`}
+                  value={runtimeText(r.medianHours, q.outageRuntime.maxHours)}
+                  sub={
+                    `typical · shortest ${runtimeText(r.shortestHours, q.outageRuntime.maxHours)} · ` +
+                    `starts with ${num(r.medianStartKwh, 1)} kWh stored`
+                  }
+                />
+              ))
+              : null}
             <KeyValue
               label="Covered in simulated year"
               value={`${q.outageCoverage.eventsFullyCovered} of ${q.outageCoverage.eventsInSimulatedYear}`}

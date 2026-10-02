@@ -336,6 +336,18 @@ export function payback(q: QuoteResult): { annualSaving: number; years: number |
   return { annualSaving, years: annualSaving > 0 ? q.pricing.total / annualSaving : null };
 }
 
+/** Battery runtime as text: "10.9 h", or "7+ days" once it reaches the cap. */
+export function runtimeText(hours: number, maxHours: number): string {
+  return hours >= maxHours ? `${num(maxHours / 24)}+ days` : `${num(hours, 1)} h`;
+}
+
+const clock = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+
+/** "If the power goes out at 11:00" — names an outage runtime by its start hour. */
+export function runtimeLabel(startHour: number): string {
+  return `Outage from ${clock(startHour)}`;
+}
+
 /** Plain-text summary for pasting into a message or email to the customer. */
 export function quoteSummaryText(q: QuoteResult, customer: string): string {
   const { annualSaving, years } = payback(q);
@@ -345,6 +357,14 @@ export function quoteSummaryText(q: QuoteResult, customer: string): string {
     `Panels: ${q.panels.count} × ${q.panels.wattsEach} W (${num(q.panels.systemKw, 2)} kWp)`,
     `Inverter: ${q.inverter.count} × ${q.inverter.ratingKwEach} kW`,
     `Battery: ${q.battery.units} unit${q.battery.units === 1 ? '' : 's'}, ${num(q.battery.installedKwh, 1)} kWh`,
+    ...(q.outageRuntime
+      ? [
+        `Battery backup in an outage: about ${runtimeText(q.outageRuntime.peakSun.medianHours, q.outageRuntime.maxHours)} ` +
+          `if it starts at ${clock(q.outageRuntime.peakSun.startHour)} (peak sun), about ` +
+          `${runtimeText(q.outageRuntime.afterSunset.medianHours, q.outageRuntime.maxHours)} if it starts at ` +
+          `${clock(q.outageRuntime.afterSunset.startHour)} (after sunset)`,
+      ]
+      : []),
     '',
     `Panels ${peso(q.pricing.panels)}`,
     `Inverters ${peso(q.pricing.inverters)}`,

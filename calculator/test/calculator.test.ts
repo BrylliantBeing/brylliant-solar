@@ -9,7 +9,10 @@ import {
 } from '../src/solarQuoteCalculator';
 import { ZAMCELCO_OUTAGES_CSV } from '../src/zamcelcoOutages';
 
-const { outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear } = __test;
+const {
+  outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear, batteryRuntimeHours,
+  runtimeStartHours,
+} = __test;
 const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS };
 const iso = (s: DateInputLike) => formatWallTime(parseZamboangaDateTime(s));
 type DateInputLike = string | number | Date;
@@ -320,6 +323,33 @@ test('Quote: during an outage nothing is exported, and unmet load is reported', 
   assert.ok(march(withOutage).exportKwh < march(without).exportKwh);
   assert.ok(withOutage.unmetKwh > 0);
   assert.equal(withOutage.outageEventsUncovered, 1);
+});
+
+test('Runtime: battery drains at the load, refills from surplus sun, and the last hour is prorated', () => {
+  const ref = refFrom(readings('2026-09-01 00:00', 168, () => 2)); // 2 kWh every hour
+  const start = parseZamboangaDateTime('2026-03-27 18:00');
+  // No sun: 5 kWh lasts 2.5 hours.
+  assert.equal(batteryRuntimeHours(start, 5, ref, sunAll({}), 0, 10, 12, cfg), 2.5);
+  // 4 kWp × 1 kWh/kWp at 18:00 covers the load and adds 2 kWh before the battery starts draining.
+  assert.equal(batteryRuntimeHours(start, 5, ref, sunAll({ 18: 1 }), 4, 10, 12, cfg), 4.5);
+  // Charging stops at full: 9 kWh + 2 kWh surplus caps at 10, then 5 hours of drain.
+  assert.equal(batteryRuntimeHours(start, 9, ref, sunAll({ 18: 1 }), 4, 10, 12, cfg), 6);
+  // Enough sun every day to refill the battery: runtime hits the one-week cap.
+  assert.equal(batteryRuntimeHours(start, 40, ref, sunAll({ 10: 30, 11: 30 }), 1, 50, 60, cfg), 168);
+});
+
+test('Runtime: start hours are the peak sun hour and the first dark hour after it', () => {
+  assert.deepEqual(runtimeStartHours(sunAll({ 9: 0.4, 10: 0.5, 11: 0.6, 12: 0.5, 13: 0.4, 14: 0.3, 15: 0.2, 16: 0.15, 17: 0.1, 18: 0.001 })), { peak: 11, sunset: 18 });
+});
+
+test('Quote: battery lasts longer when the outage starts at peak sun than after sunset', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
+  const { peakSun, afterSunset, maxHours } = q.outageRuntime;
+  assert.equal(maxHours, 168);
+  assert.ok(afterSunset.medianHours > 0 && afterSunset.medianHours <= maxHours);
+  assert.ok(peakSun.medianHours > afterSunset.medianHours, JSON.stringify(q.outageRuntime));
+  assert.ok(peakSun.shortestHours <= peakSun.medianHours);
+  assert.ok(afterSunset.medianStartKwh <= q.battery.installedKwh);
 });
 
 test('Quote: placeholder sun profile is flagged', () => {
