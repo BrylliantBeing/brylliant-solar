@@ -246,6 +246,15 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
         help: 'SPE12000ES: 2 strings of 10 × 720 W (490 V Voc, under 550 V)',
       },
       { key: 'inverterPriceUsd', label: 'Inverter price', unit: 'US$ each' },
+      { key: 'gridTieInverterKw', label: 'Grid-tie inverter rating', unit: 'kW', help: 'Comparison only' },
+      {
+        key: 'gridTieInverterMaxPanels',
+        label: 'Panels per grid-tie inverter',
+        unit: 'max',
+        help: 'SUN-10K-G02P1: 2 MPPT × 1 string of 10 × 720 W (490 V, 17.5 A under 26 A)',
+      },
+      { key: 'gridTieInverterPriceUsd', label: 'Grid-tie inverter price', unit: 'US$ each' },
+      { key: 'gridTieMaxDcAcRatio', label: 'Grid-tie max DC/AC', unit: '×', help: '15 kW PV on the 10 kW Deye' },
       { key: 'batteryUnitKwh', label: 'Battery unit', unit: 'kWh' },
       { key: 'batteryPriceUsd', label: 'Battery price', unit: 'US$ each' },
       { key: 'usdToPhp', label: 'Exchange rate', unit: '₱ per US$', help: 'Live rate filled in when the page opens' },
@@ -384,5 +393,18 @@ export function quoteSummaryText(q: QuoteResult, customer: string): string {
     `Average monthly bill: ${peso(q.bill.averageMonthlyBefore)} → ${peso(q.bill.averageMonthlyAfter)} (${num(q.bill.reductionPercent, 1)}% lower)`,
     `Estimated saving: ${peso(annualSaving)} a year` +
       (years !== null ? `, simple payback about ${num(years, 1)} years` : ''),
+    ...(q.gridTie ? ['', ...gridTieSummaryLines(q.gridTie)] : []),
   ].join('\n');
+}
+
+function gridTieSummaryLines(g: QuoteResult): string[] {
+  const { annualSaving, years } = payback(g);
+  return [
+    'Alternative without batteries (grid-tie): lower price, but no power during outages',
+    `Panels: ${g.panels.count} × ${g.panels.wattsEach} W (${num(g.panels.systemKw, 2)} kWp)`,
+    `Inverter: ${g.inverter.count} × ${g.inverter.ratingKwEach} kW grid-tie`,
+    `Total ${peso(g.pricing.total)}`,
+    `Average monthly bill: ${peso(g.bill.averageMonthlyBefore)} → ${peso(g.bill.averageMonthlyAfter)} (${num(g.bill.reductionPercent, 1)}% lower)`,
+    `Estimated saving: ${peso(annualSaving)} a year` + (years !== null ? `, simple payback about ${num(years, 1)} years` : ''),
+  ];
 }

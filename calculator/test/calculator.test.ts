@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as XLSX from 'xlsx';
 import {
-  __test, buildSunProfile, calculateQuote, formatWallTime, HourlyReading, parseOutageCsv,
+  __test, buildSunProfile, calculateComparison, calculateQuote, formatWallTime, HourlyReading, parseOutageCsv,
   parseZamboangaDateTime, QuoteDefaults, SunOutputRow, ZAMBOANGA_DEFAULTS, detectDateOrder,
 } from '../src/solarQuoteCalculator';
 import { ZAMCELCO_OUTAGES_CSV } from '../src/zamcelcoOutages';
@@ -330,8 +330,8 @@ const heavyEvenings = () => readings('2026-09-01 00:00', 168, (_d, h) => (h >= 1
 test('Quote: the battery grows until a typical outage after sunset lasts minAfterSunsetHours', () => {
   const off = calculateQuote({ consumption: heavyEvenings(), sunProfile: realSun, minAfterSunsetHours: 0 });
   const on = calculateQuote({ consumption: heavyEvenings(), sunProfile: realSun, minAfterSunsetHours: 3 });
-  assert.ok(off.outageRuntime.afterSunset.medianHours < 3, JSON.stringify(off.outageRuntime.afterSunset));
-  assert.ok(on.outageRuntime.afterSunset.medianHours >= 3, JSON.stringify(on.outageRuntime.afterSunset));
+  assert.ok(off.outageRuntime!.afterSunset.medianHours < 3, JSON.stringify(off.outageRuntime!.afterSunset));
+  assert.ok(on.outageRuntime!.afterSunset.medianHours >= 3, JSON.stringify(on.outageRuntime!.afterSunset));
   assert.ok(on.battery.units > off.battery.units);
   assert.equal(on.battery.sizedBy, 'evening runtime');
   assert.equal(on.battery.afterSunsetTargetHours, 3);
@@ -343,7 +343,7 @@ test('Quote: the battery grows until a typical outage after sunset lasts minAfte
   simulateYear(ctx, on.panels.systemKw, kwh, on.inverter.totalKw, cfg, trace);
   const runtimes: number[] = [];
   for (let day = ctx.start; day < ctx.end; day += 86400000) {
-    const at = day + on.outageRuntime.afterSunset.startHour * 3600000;
+    const at = day + on.outageRuntime!.afterSunset.startHour * 3600000;
     runtimes.push(batteryRuntimeHours(at, trace[(at - ctx.start) / 3600000], ref, realSun.monthly, on.panels.systemKw, kwh, on.inverter.totalKw, cfg));
   }
   runtimes.sort((a, b) => a - b);
@@ -394,12 +394,58 @@ test('Runtime: start hours are the peak sun hour and the first dark hour after i
 
 test('Quote: battery lasts longer when the outage starts at peak sun than after sunset', () => {
   const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun });
-  const { peakSun, afterSunset, maxHours } = q.outageRuntime;
+  const { peakSun, afterSunset, maxHours } = q.outageRuntime!;
   assert.equal(maxHours, 168);
   assert.ok(afterSunset.medianHours > 0 && afterSunset.medianHours <= maxHours);
   assert.ok(peakSun.medianHours > afterSunset.medianHours, JSON.stringify(q.outageRuntime));
   assert.ok(peakSun.shortestHours <= peakSun.medianHours);
   assert.ok(afterSunset.medianStartKwh <= q.battery.installedKwh);
+});
+
+// ── Grid-tie comparison ─────────────────────────────────────
+
+test('Grid-tie: no batteries, Deye inverters set by the panel count, same bill target', () => {
+  const g = calculateQuote({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun, systemType: 'grid-tie' });
+  assert.equal(g.systemType, 'grid-tie');
+  assert.equal(g.battery.units, 0);
+  assert.equal(g.pricing.batteries, 0);
+  assert.equal(g.inverter.ratingKwEach, 10);
+  assert.equal(g.inverter.countForLoad, 0);
+  assert.equal(g.inverter.count, Math.ceil(g.panels.count / 20));
+  assert.equal(g.pricing.usd.inverters, g.inverter.count * 537);
+  assert.ok(g.bill.reductionPercent >= 95);
+  assert.equal(g.outageRuntime, null);
+  assert.ok(!g.warnings.some((w) => w.includes('No outage data') || w.includes('not fully covered')));
+});
+
+test('Grid-tie: no solar during an outage, even at noon; every outage goes unpowered', () => {
+  const ref = refFrom(week());
+  const noon = [{ start: parseZamboangaDateTime('2026-03-27 10:00'), end: parseZamboangaDateTime('2026-03-27 14:00') }];
+  const hybridCtx = buildSimContext(ref, realSun.monthly, noon);
+  const gridTieCtx = buildSimContext(ref, realSun.monthly, noon, false);
+  const hybrid = simulateYear(hybridCtx, 10, 0, 12, cfg);
+  const gridTie = simulateYear(gridTieCtx, 10, 0, 12, cfg);
+  assert.equal(hybrid.unmetKwh, 0); // 10 kWp covers the midday load
+  assert.ok(Math.abs(gridTie.unmetKwh - 4 * ref.hourly[5][11]) < 1e-9); // Fri, 4 h at the midday load
+  assert.equal(gridTie.outageEventsUncovered, 1);
+  assert.ok(gridTie.curtailedKwh > hybrid.curtailedKwh);
+});
+
+test('Comparison: the hybrid quote carries the grid-tie quote for the same customer', () => {
+  const c = calculateComparison({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun });
+  assert.equal(c.systemType, 'hybrid');
+  assert.ok(c.battery.units > 0);
+  assert.equal(c.gridTie!.systemType, 'grid-tie');
+  assert.equal(c.gridTie!.bill.annualBefore, c.bill.annualBefore);
+  // Without a battery, night use is bought at the import rate and paid back at the lower export credit.
+  assert.ok(c.gridTie!.panels.count >= c.panels.count, `${c.gridTie!.panels.count} vs ${c.panels.count}`);
+  assert.ok(c.gridTie!.pricing.total < c.pricing.total);
+});
+
+test('Comparison: a grid-tie system that cannot be sized leaves a warning, not an error', () => {
+  const c = calculateComparison({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun, maxPanels: 16 }); // hybrid needs 14, grid-tie 18
+  assert.equal(c.gridTie, undefined);
+  assert.ok(c.warnings.some((w) => w.startsWith('No grid-tie comparison')), JSON.stringify(c.warnings));
 });
 
 test('Quote: placeholder sun profile is flagged, the built-in profile is not', () => {

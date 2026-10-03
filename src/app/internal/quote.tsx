@@ -1,6 +1,6 @@
 import {
   ZAMBOANGA_DEFAULTS,
-  calculateQuote,
+  calculateComparison,
   parseOutageCsv,
   parseZamboangaDateTime,
   formatWallTime,
@@ -216,7 +216,7 @@ export default function QuoteCalculator() {
     // Let "Calculating…" paint before the simulation holds the thread.
     setTimeout(() => {
       try {
-        const quote = calculateQuote({
+        const quote = calculateComparison({
           ...assumptions.values,
           consumption: consumption.readings,
           outages: outages?.outages ?? [],
@@ -527,7 +527,7 @@ export default function QuoteCalculator() {
     <InternalPage
       eyebrow="Quote"
       title="Hybrid quote calculator"
-      lede="Sizes panels, inverters and batteries for a 95% bill reduction. It simulates a year hour by hour from the customer’s highest-use week, the Zamboanga sun profile and the outage history.">
+      lede="Sizes panels, inverters and batteries for a 95% bill reduction, and the same customer on a grid-tie system without batteries for comparison. It simulates a year hour by hour from the customer’s highest-use week, the Zamboanga sun profile and the outage history.">
       {saved || result ? (
         <View style={{ alignSelf: 'flex-start' }}>
           <SmallButton label="Start a new quote" onPress={startNew} />
@@ -545,6 +545,51 @@ export default function QuoteCalculator() {
         </View>
       )}
     </InternalPage>
+  );
+}
+
+/** Same customer, same bill target: what the batteries and hybrid inverter add. */
+function GridTieComparison({ hybrid: h, gridTie: g }: { hybrid: QuoteResult; gridTie: QuoteResult }) {
+  const hs = payback(h);
+  const gs = payback(g);
+  const years = (y: number | null) => (y === null ? 'n/a' : `${num(y, 1)} years`);
+  const panels = (q: QuoteResult) => `${q.panels.count} × ${q.panels.wattsEach} W (${num(q.panels.systemKw, 2)} kWp)`;
+  const inverters = (q: QuoteResult) => `${q.inverter.count} × ${q.inverter.ratingKwEach} kW`;
+  const covered = (q: QuoteResult) => `${q.outageCoverage.eventsFullyCovered} of ${q.outageCoverage.eventsInSimulatedYear}`;
+  const extraCost = h.pricing.total - g.pricing.total;
+  const extraSaving = hs.annualSaving - gs.annualSaving;
+  return (
+    <Panel title="Hybrid vs grid-tie (no batteries)">
+      <Table
+        head={['', 'Hybrid', 'Grid-tie']}
+        rows={[
+          ['Panels', panels(h), panels(g)],
+          ['Inverters', inverters(h), inverters(g)],
+          ['Batteries', `${h.battery.units} × ${num(h.battery.installedKwh / Math.max(1, h.battery.units), 1)} kWh`, 'None'],
+          ['Total price', peso(h.pricing.total), peso(g.pricing.total)],
+          ['Monthly bill after', peso(h.bill.averageMonthlyAfter), peso(g.bill.averageMonthlyAfter)],
+          ['Bill reduction', `${num(h.bill.reductionPercent, 1)}%`, `${num(g.bill.reductionPercent, 1)}%`],
+          ['Saving', `${peso(hs.annualSaving)}/yr`, `${peso(gs.annualSaving)}/yr`],
+          ['Simple payback', years(hs.years), years(gs.years)],
+          [
+            'Outage after sunset',
+            h.outageRuntime ? `${runtimeText(h.outageRuntime.afterSunset.medianHours, h.outageRuntime.maxHours)} typical` : 'n/a',
+            'No power',
+          ],
+          ['Outages covered (sim. year)', covered(h), covered(g)],
+          ['Load without power in outages', `${num(h.outageCoverage.unmetLoadKwh, 1)} kWh`, `${num(g.outageCoverage.unmetLoadKwh, 1)} kWh`],
+        ]}
+      />
+      <ThemedText type="small" themeColor="textSecondary">
+        The battery backup adds {peso(extraCost)}
+        {extraSaving > 0
+          ? `, and saves ${peso(extraSaving)} more a year (${num(extraCost / extraSaving, 1)} years to pay back the difference).`
+          : ' and saves no more on the bill: it pays for itself only as backup power.'}{' '}
+        Grid-tie inverters shut down with the grid (anti-islanding), so a grid-tie system gives no power in an outage,
+        even in full sun.
+      </ThemedText>
+      <MessageList title="Grid-tie: check before sending" tone="warn" items={g.warnings} />
+    </Panel>
   );
 }
 
@@ -569,6 +614,7 @@ function Results({
       ? `${count} × ${usd(usdTotal / count)} = ${usd(usdTotal)}`
       : `${count} × ${peso(php / Math.max(1, count))}`;
   const monthly = q.bill.monthly;
+  const runtime = q.outageRuntime;
   const sum = (pick: (m: (typeof monthly)[number]) => number) => monthly.reduce((a, m) => a + pick(m), 0);
 
   return (
@@ -631,6 +677,8 @@ function Results({
         <KeyValue label="Total" value={peso(q.pricing.total)} total />
       </Panel>
 
+      {q.gridTie ? <GridTieComparison hybrid={q} gridTie={q.gridTie} /> : null}
+
       <Panel title={`Simulated year · ${q.simulation.start.slice(0, 7)} to ${q.bill.monthly[monthly.length - 1]?.month ?? ''}`}>
         <Table
           head={['Month', 'Use kWh', 'Import kWh', 'Export kWh', 'Bill before', 'Bill after', 'Credit c/f']}
@@ -685,17 +733,17 @@ function Results({
                 }
               />
             ) : null}
-            {q.outageRuntime
+            {runtime
               ? ([
-                ['peak sun', q.outageRuntime.peakSun],
-                ['after sunset', q.outageRuntime.afterSunset],
+                ['peak sun', runtime.peakSun],
+                ['after sunset', runtime.afterSunset],
               ] as const).map(([when, r]) => (
                 <KeyValue
                   key={when}
                   label={`${runtimeLabel(r.startHour)} (${when})`}
-                  value={runtimeText(r.medianHours, q.outageRuntime.maxHours)}
+                  value={runtimeText(r.medianHours, runtime.maxHours)}
                   sub={
-                    `typical · shortest ${runtimeText(r.shortestHours, q.outageRuntime.maxHours)} · ` +
+                    `typical · shortest ${runtimeText(r.shortestHours, runtime.maxHours)} · ` +
                     `starts with ${num(r.medianStartKwh, 1)} kWh stored`
                   }
                 />

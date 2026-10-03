@@ -75,7 +75,18 @@ export interface QuoteDefaults {
   creditRollover: boolean;          // unused export credit carries to next month
   maxDcAcRatio: number;             // warn above this panel kW / inverter kW
   maxPanels: number;                // search ceiling for panel sizing
+  // Grid-tie comparison: these replace the inverter* settings and maxDcAcRatio
+  gridTieInverterKw: number;
+  gridTieInverterMaxPanels: number;
+  gridTieInverterPriceUsd: number;
+  gridTieMaxDcAcRatio: number;
 }
+
+/**
+ * hybrid: batteries, and the inverter keeps the house running in an outage.
+ * grid-tie: no batteries; the inverter shuts down whenever the grid is down (anti-islanding).
+ */
+export type SystemType = 'hybrid' | 'grid-tie';
 
 export interface CalculatorInput extends Partial<QuoteDefaults> {
   /** REQUIRED: at least 168 hourly readings (1 week). May be longer. */
@@ -86,6 +97,8 @@ export interface CalculatorInput extends Partial<QuoteDefaults> {
   sunProfile?: SunProfile | number[] | number[][];
   /** OPTIONAL: only needed if consumption timestamps are numeric dates like 04/09/2026 */
   dateOrder?: DateOrder;
+  /** OPTIONAL: defaults to hybrid */
+  systemType?: SystemType;
 }
 
 export interface MonthlyBill {
@@ -110,9 +123,11 @@ export interface OutageRuntime {
 }
 
 /** What set the battery size: the largest of these wins */
-export type BatterySizedBy = 'minimum' | 'outage needs' | 'outage coverage' | 'evening runtime';
+export type BatterySizedBy = 'none' | 'minimum' | 'outage needs' | 'outage coverage' | 'evening runtime';
 
 export interface QuoteResult {
+  /** Missing on quotes saved before grid-tie quotes existed; those are hybrid */
+  systemType?: SystemType;
   battery: {
     requiredKwh: number;        // 80th percentile of outage needs, each starting from a full battery
     sizingKwh: number;          // requiredKwh, or requiredKwh / (1 − reserve) if the reserve is untouchable
@@ -170,8 +185,8 @@ export interface QuoteResult {
     eventsFullyCovered: number;
     unmetLoadKwh: number;
   };
-  /** How long the battery lasts in an outage that starts at a given time of day */
-  outageRuntime: {
+  /** How long the battery lasts in an outage that starts at a given time of day; null for grid-tie */
+  outageRuntime: null | {
     /** Runtimes stop counting here; a value equal to it means "at least this long" */
     maxHours: number;
     /** Outage starts at the hour of highest sun output */
@@ -205,6 +220,8 @@ export interface QuoteResult {
   warnings: string[];
   /** Informational: how the quote was built */
   notes: string[];
+  /** The same customer on a grid-tie system, from calculateComparison */
+  gridTie?: QuoteResult;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -237,6 +254,10 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   creditRollover: true,
   maxDcAcRatio: 1.3,
   maxPanels: 300,
+  gridTieInverterKw: 10, // Deye SUN-10K-G02P1-EU-AM2, single phase
+  gridTieInverterMaxPanels: 20, // 2 MPPT × 1 string of 10: 490 V Voc under 550 V, ~17.5 A under 26 A; 14.4 kWp under 15 kW
+  gridTieInverterPriceUsd: 537,
+  gridTieMaxDcAcRatio: 1.5, // Deye allows 15 kW of PV on the 10 kW unit
 };
 
 const MIN_HOURS = 168;
@@ -1010,6 +1031,16 @@ function sizeBattery(
   return { needs, requiredKwh, sizingKwh, units, unitsFor, sizedBy, installedKwh: units * cfg.batteryUnitKwh };
 }
 
+type BatterySizing = Omit<ReturnType<typeof sizeBattery>, 'sizedBy'> & { sizedBy: BatterySizedBy };
+
+/** Grid-tie: nothing to size. */
+function noBattery(): BatterySizing {
+  return {
+    needs: [], requiredKwh: 0, sizingKwh: 0, units: 0, installedKwh: 0, sizedBy: 'none',
+    unitsFor: { minimum: 0, outageNeeds: 0, outageCoverage: 0, eveningRuntime: 0 },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // One-year simulation and monthly billing
 // ─────────────────────────────────────────────────────────────
@@ -1028,6 +1059,8 @@ interface SimContext {
   start: number;
   end: number;
   outageCount: number;
+  /** false for grid-tie: the inverter shuts down with the grid, so solar is lost during outages */
+  solarInOutages: boolean;
 }
 
 /**
@@ -1035,7 +1068,7 @@ interface SimContext {
  * recorded. Each hour takes the reference-week load for its weekday, the sun for its
  * month, and any historical outage that fell in it.
  */
-function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOutage[]): SimContext {
+function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOutage[], solarInOutages = true): SimContext {
   const first = wallParts(ref.firstDay);
   const end = wallMs(first.year, first.month, 1);
   const start = wallMs(first.year - 1, first.month, 1);
@@ -1065,7 +1098,7 @@ function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOut
       h.outageId = id;
     }
   });
-  return { hours, monthLabels, start, end, outageCount };
+  return { hours, monthLabels, start, end, outageCount, solarInOutages };
 }
 
 interface SimResult {
@@ -1110,7 +1143,9 @@ function simulateYear(
     for (const [share, gridUp] of [[h.outFrac, false], [1 - h.outFrac, true]] as [number, boolean][]) {
       if (share <= 0) continue;
       const load = h.load * share;
-      const g = gen * share;
+      const solarOn = gridUp || ctx.solarInOutages;
+      const g = solarOn ? gen * share : 0;
+      if (!solarOn) curtailed += gen * share;
       const limit = inverterKw * share; // inverter power limit for this part of the hour
       if (gridUp) mLoadUp[h.monthIdx] += load;
       if (g >= load) {
@@ -1241,106 +1276,12 @@ function outageRuntime(
   };
 }
 
-/** Inverters for a panel count: enough for the peak load, and enough PV inputs for every panel. */
-function inverterCountFor(panels: number, countForLoad: number, cfg: QuoteDefaults): number {
-  return Math.max(countForLoad, Math.ceil(panels / cfg.inverterMaxPanels - 1e-9));
-}
-
-/**
- * Fewest panels whose simulated annual bill is at most (1 − target) of the bill without solar.
- * Each candidate is simulated with the inverters it needs, so extra panels bring their own inverter.
- */
-function sizePanels(
-  ctx: SimContext, batteryKwh: number, countForLoad: number, cfg: QuoteDefaults,
-): number {
-  const kw = (count: number) => (count * cfg.panelWatts) / 1000;
-  const meets = (count: number) => {
-    const inverterKw = inverterCountFor(count, countForLoad, cfg) * cfg.inverterKw;
-    const sim = simulateYear(ctx, kw(count), batteryKwh, inverterKw, cfg);
-    return sim.billAfter <= sim.baseline * (1 - cfg.targetReduction) + 1e-6;
-  };
-  if (!meets(cfg.maxPanels)) {
-    throw new Error(
-      `A ${cfg.targetReduction * 100}% reduction cannot be reached with ${cfg.maxPanels} panels. ` +
-      'Check the consumption and sun data, or raise maxPanels.',
-    );
-  }
-  let lo = 0;            // known to fail (or zero panels)
-  let hi = cfg.maxPanels; // known to meet
-  while (hi - lo > 1) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (meets(mid)) hi = mid; else lo = mid;
-  }
-  return Math.max(1, hi);
-}
-
-// ─────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────
-
-export function calculateQuote(input: CalculatorInput): QuoteResult {
-  const { consumption, outages: rawOutages = [], sunProfile: sunInput, dateOrder, ...overrides } = input;
-  const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS, ...stripUndefined(overrides) };
-  const warnings: string[] = [];
-  const notes: string[] = [];
-
-  if (cfg.batteryReserve < 0 || cfg.batteryReserve >= 1) throw new Error('batteryReserve must be between 0 and 1.');
-  if (cfg.batteryRoundTripEfficiency <= 0 || cfg.batteryRoundTripEfficiency > 1) {
-    throw new Error('batteryRoundTripEfficiency must be above 0 and at most 1.');
-  }
-  if (cfg.inverterKw <= 0) throw new Error('inverterKw must be above 0.');
-  if (cfg.inverterMaxPanels < 1) throw new Error('inverterMaxPanels must be at least 1.');
-  if (cfg.maxBatteryUnits < cfg.minBatteryUnits) throw new Error('maxBatteryUnits must be at least minBatteryUnits.');
-
-  // Sun data
-  const sunProfile = normalizeSunProfile(sunInput);
-  const sun = sunProfile.monthly;
-  if (sunProfile.isPlaceholder) {
-    warnings.push('Using the placeholder sun profile. Run scripts/buildSunProfile.ts on your inverter log before quoting.');
-  }
-
-  // Consumption → reference week
-  const byHour = parseConsumption(consumption, dateOrder, warnings);
-  const ref = buildReferenceWeek(byHour);
-  if (ref.fallbackWeekdays.length > 0) {
-    warnings.push(
-      `No complete day for ${ref.fallbackWeekdays.map((d) => WEEKDAY_NAMES[d]).join(', ')}. ` +
-      'The highest-consumption complete day is used instead.',
-    );
-  }
-
-  // Outages
-  const outageOrder = detectDateOrder(rawOutages.flatMap((o) => [o.start, o.end]));
-  const outages: ParsedOutage[] = [];
-  let outagesSkipped = 0;
-  for (const o of rawOutages) {
-    try {
-      const start = parseZamboangaDateTime(o.start, outageOrder);
-      const end = parseZamboangaDateTime(o.end, outageOrder);
-      if (end > start) outages.push({ start, end }); else outagesSkipped++;
-    } catch { outagesSkipped++; }
-  }
-  if (outagesSkipped > 0) warnings.push(`${outagesSkipped} outage records could not be read and were skipped.`);
-  if (outages.length === 0) {
-    warnings.push('No outage data. The battery is sized by the minimum units and the after-sunset runtime only.');
-  }
-
-  // Inverters for the load: peak one-hour consumption, units in parallel. More may be
-  // added once the panel count is known, since each inverter takes a limited number of panels.
-  const peakHourlyLoadKwh = maxOf([...byHour.values()]);
-  const countForLoad = Math.max(1, Math.ceil(peakHourlyLoadKwh / cfg.inverterKw - 1e-9));
-
-  // Simulated year
-  const ctx = buildSimContext(ref, sun, outages);
-  if (outages.length > 0 && ctx.outageCount === 0) {
-    warnings.push(
-      `No outage in the history falls in the simulated year (${formatWallTime(ctx.start).slice(0, 7)} to ` +
-      `${formatWallTime(ctx.end - 1).slice(0, 7)}), so outages are not part of the bill simulation.`,
-    );
-  }
-
-  // Battery ↔ panel iteration: battery depends on panel output during outages,
-  // panel count depends on the battery's daily usable capacity.
+/** Battery ↔ panel iteration: battery depends on panel output during outages,
+ * panel count depends on the battery's daily usable capacity. */
+function sizeHybrid(
+  outages: ParsedOutage[], ref: ReferenceWeek, sun: number[][], ctx: SimContext, countForLoad: number,
+  cfg: QuoteDefaults, warnings: string[],
+) {
   const systemFor = (count: number): SizingSystem => ({
     ctx,
     systemKw: (count * cfg.panelWatts) / 1000,
@@ -1381,6 +1322,143 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     );
   }
 
+  return { battery: battery as BatterySizing, panels, converged, iterations };
+}
+
+function hybridBatteryNotes(cfg: QuoteDefaults, sizedBy: BatterySizedBy): string[] {
+  return [
+    `Battery starts the simulated year at the ${cfg.batteryReserve * 100}% reserve level.`,
+    `The battery is the largest of: the minimum (${cfg.minBatteryUnits}), the ${cfg.outagePercentile * 100}th ` +
+      `percentile of outage needs, covering ${cfg.outagePercentile * 100}% of the simulated year's outages, and a ` +
+      `typical ${cfg.minAfterSunsetHours} h runtime after sunset. Here it was set by the ${sizedBy} rule.`,
+    'Outage runtimes start from the battery charge normal operation leaves at that hour, ' +
+      `are repeated on every day of the simulated year, and stop counting at ${RUNTIME_CAP_HOURS} hours.`,
+  ];
+}
+
+/** Inverters for a panel count: enough for the peak load, and enough PV inputs for every panel. */
+function inverterCountFor(panels: number, countForLoad: number, cfg: QuoteDefaults): number {
+  return Math.max(countForLoad, Math.ceil(panels / cfg.inverterMaxPanels - 1e-9));
+}
+
+/**
+ * Fewest panels whose simulated annual bill is at most (1 − target) of the bill without solar.
+ * Each candidate is simulated with the inverters it needs, so extra panels bring their own inverter.
+ */
+function sizePanels(
+  ctx: SimContext, batteryKwh: number, countForLoad: number, cfg: QuoteDefaults,
+): number {
+  const kw = (count: number) => (count * cfg.panelWatts) / 1000;
+  const meets = (count: number) => {
+    const inverterKw = inverterCountFor(count, countForLoad, cfg) * cfg.inverterKw;
+    const sim = simulateYear(ctx, kw(count), batteryKwh, inverterKw, cfg);
+    return sim.billAfter <= sim.baseline * (1 - cfg.targetReduction) + 1e-6;
+  };
+  if (!meets(cfg.maxPanels)) {
+    throw new Error(
+      `A ${cfg.targetReduction * 100}% reduction cannot be reached with ${cfg.maxPanels} panels. ` +
+      'Check the consumption and sun data, or raise maxPanels.',
+    );
+  }
+  let lo = 0;            // known to fail (or zero panels)
+  let hi = cfg.maxPanels; // known to meet
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (meets(mid)) hi = mid; else lo = mid;
+  }
+  return Math.max(1, hi);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────
+
+export function calculateQuote(input: CalculatorInput): QuoteResult {
+  const {
+    consumption, outages: rawOutages = [], sunProfile: sunInput, dateOrder, systemType = 'hybrid', ...overrides
+  } = input;
+  const gridTie = systemType === 'grid-tie';
+  const base: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS, ...stripUndefined(overrides) };
+  // Grid-tie swaps in its own inverter; everything below reads cfg.inverter*.
+  const cfg: QuoteDefaults = gridTie
+    ? {
+      ...base,
+      inverterKw: base.gridTieInverterKw,
+      inverterMaxPanels: base.gridTieInverterMaxPanels,
+      inverterPriceUsd: base.gridTieInverterPriceUsd,
+      maxDcAcRatio: base.gridTieMaxDcAcRatio,
+    }
+    : base;
+  const warnings: string[] = [];
+  const notes: string[] = [];
+
+  if (cfg.batteryReserve < 0 || cfg.batteryReserve >= 1) throw new Error('batteryReserve must be between 0 and 1.');
+  if (cfg.batteryRoundTripEfficiency <= 0 || cfg.batteryRoundTripEfficiency > 1) {
+    throw new Error('batteryRoundTripEfficiency must be above 0 and at most 1.');
+  }
+  if (cfg.inverterKw <= 0) throw new Error('inverterKw must be above 0.');
+  if (cfg.inverterMaxPanels < 1) throw new Error('inverterMaxPanels must be at least 1.');
+  if (cfg.maxBatteryUnits < cfg.minBatteryUnits) throw new Error('maxBatteryUnits must be at least minBatteryUnits.');
+
+  // Sun data
+  const sunProfile = normalizeSunProfile(sunInput);
+  const sun = sunProfile.monthly;
+  if (sunProfile.isPlaceholder) {
+    warnings.push('Using the placeholder sun profile. Run scripts/buildSunProfile.ts on your inverter log before quoting.');
+  }
+
+  // Consumption → reference week
+  const byHour = parseConsumption(consumption, dateOrder, warnings);
+  const ref = buildReferenceWeek(byHour);
+  if (ref.fallbackWeekdays.length > 0) {
+    warnings.push(
+      `No complete day for ${ref.fallbackWeekdays.map((d) => WEEKDAY_NAMES[d]).join(', ')}. ` +
+      'The highest-consumption complete day is used instead.',
+    );
+  }
+
+  // Outages
+  const outageOrder = detectDateOrder(rawOutages.flatMap((o) => [o.start, o.end]));
+  const outages: ParsedOutage[] = [];
+  let outagesSkipped = 0;
+  for (const o of rawOutages) {
+    try {
+      const start = parseZamboangaDateTime(o.start, outageOrder);
+      const end = parseZamboangaDateTime(o.end, outageOrder);
+      if (end > start) outages.push({ start, end }); else outagesSkipped++;
+    } catch { outagesSkipped++; }
+  }
+  if (outagesSkipped > 0) warnings.push(`${outagesSkipped} outage records could not be read and were skipped.`);
+  if (outages.length === 0 && !gridTie) {
+    warnings.push('No outage data. The battery is sized by the minimum units and the after-sunset runtime only.');
+  }
+
+  // Inverters for the load: peak one-hour consumption, units in parallel. More may be
+  // added once the panel count is known, since each inverter takes a limited number of panels.
+  // A grid-tie inverter never carries the house alone (the grid does), so only the panels count.
+  const peakHourlyLoadKwh = maxOf([...byHour.values()]);
+  const countForLoad = gridTie ? 0 : Math.max(1, Math.ceil(peakHourlyLoadKwh / cfg.inverterKw - 1e-9));
+
+  // Simulated year
+  const ctx = buildSimContext(ref, sun, outages, !gridTie);
+  if (outages.length > 0 && ctx.outageCount === 0) {
+    warnings.push(
+      `No outage in the history falls in the simulated year (${formatWallTime(ctx.start).slice(0, 7)} to ` +
+      `${formatWallTime(ctx.end - 1).slice(0, 7)}), so outages are not part of the bill simulation.`,
+    );
+  }
+
+  // Grid-tie: no battery, so panels are sized once. Hybrid: battery and panels depend on each other.
+  const sized = gridTie
+    ? {
+      battery: noBattery(),
+      panels: sizePanels(ctx, 0, countForLoad, cfg),
+      converged: true,
+      iterations: 1,
+    }
+    : sizeHybrid(outages, ref, sun, ctx, countForLoad, cfg, warnings);
+  const { battery, panels, converged, iterations } = sized;
+
   const systemKw = (panels * cfg.panelWatts) / 1000;
   const countForPanels = Math.ceil(panels / cfg.inverterMaxPanels - 1e-9);
   const inverterCount = inverterCountFor(panels, countForLoad, cfg);
@@ -1396,7 +1474,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       'Check the inverter PV input rating or add an inverter.',
     );
   }
-  if (sim.outageEventsUncovered > 0) {
+  if (sim.outageEventsUncovered > 0 && !gridTie) {
     warnings.push(
       `${sim.outageEventsUncovered} of ${sim.outageEvents} outages in the simulated year were not fully covered ` +
       `(${round2(sim.unmetKwh)} kWh unmet). The battery is sized to cover ${cfg.outagePercentile * 100}% of them.`,
@@ -1415,21 +1493,24 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     'changes in load (e.g. more air-conditioning in April–May) are not captured.',
   );
   notes.push('Billing uses the reference week (the highest-consumption day per weekday), so the "before" bill is an upper estimate.');
-  notes.push(
-    `Inverters cover the highest hourly kWh and take at most ${cfg.inverterMaxPanels} panels each ` +
-    `(${countForPanels > countForLoad ? 'the panel count' : 'the load'} set the number here). ` +
-    'Short peaks within an hour can be higher than the hourly figure.',
-  );
-  notes.push(`Battery starts the simulated year at the ${cfg.batteryReserve * 100}% reserve level.`);
-  notes.push(
-    `The battery is the largest of: the minimum (${cfg.minBatteryUnits}), the ${cfg.outagePercentile * 100}th ` +
-    `percentile of outage needs, covering ${cfg.outagePercentile * 100}% of the simulated year's outages, and a ` +
-    `typical ${cfg.minAfterSunsetHours} h runtime after sunset. Here it was set by the ${battery.sizedBy} rule.`,
-  );
-  notes.push(
-    'Outage runtimes start from the battery charge normal operation leaves at that hour, ' +
-    `are repeated on every day of the simulated year, and stop counting at ${RUNTIME_CAP_HOURS} hours.`,
-  );
+  if (gridTie) {
+    notes.push(
+      `Grid-tie: ${cfg.inverterKw} kW inverters taking at most ${cfg.inverterMaxPanels} panels each, set by the ` +
+      'panel count. The grid carries the house load, so the inverters do not need to cover it.',
+    );
+    notes.push(
+      'Grid-tie: no battery, and the inverter shuts down whenever the grid is down (anti-islanding), so there ' +
+      `is no power during outages, even in full sun. In the simulated year that is ${sim.outageEvents} outages ` +
+      `and ${round2(sim.unmetKwh)} kWh of load without power.`,
+    );
+  } else {
+    notes.push(
+      `Inverters cover the highest hourly kWh and take at most ${cfg.inverterMaxPanels} panels each ` +
+      `(${countForPanels > countForLoad ? 'the panel count' : 'the load'} set the number here). ` +
+      'Short peaks within an hour can be higher than the hourly figure.',
+    );
+    notes.push(...hybridBatteryNotes(cfg, battery.sizedBy));
+  }
 
   // Pricing: supplier hardware in USD, converted to PHP; labour and misc are already PHP.
   if (!(cfg.usdToPhp > 0)) throw new Error('usdToPhp must be above 0.');
@@ -1447,13 +1528,14 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   const months = sim.monthly.length;
   const needs = battery.needs;
   return {
+    systemType,
     battery: {
       requiredKwh: round2(battery.requiredKwh),
       sizingKwh: round2(battery.sizingKwh),
       units: battery.units,
       unitsFor: battery.unitsFor,
       sizedBy: battery.sizedBy,
-      afterSunsetTargetHours: cfg.minAfterSunsetHours,
+      afterSunsetTargetHours: gridTie ? 0 : cfg.minAfterSunsetHours,
       installedKwh: battery.installedKwh,
       dailyUsableKwh: round2(battery.installedKwh * (1 - cfg.batteryReserve)),
       outagesAnalyzed: outages.length,
@@ -1499,11 +1581,13 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       eventsFullyCovered: sim.outageEvents - sim.outageEventsUncovered,
       unmetLoadKwh: round2(sim.unmetKwh),
     },
-    outageRuntime: {
-      maxHours: RUNTIME_CAP_HOURS,
-      peakSun: runtimeAt(startHours.peak),
-      afterSunset: runtimeAt(startHours.sunset),
-    },
+    outageRuntime: gridTie
+      ? null
+      : {
+        maxHours: RUNTIME_CAP_HOURS,
+        peakSun: runtimeAt(startHours.peak),
+        afterSunset: runtimeAt(startHours.sunset),
+      },
     bill: {
       annualBefore: round2(sim.baseline),
       annualAfter: round2(sim.billAfter),
@@ -1527,6 +1611,19 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     warnings,
     notes,
   };
+}
+
+/**
+ * The hybrid quote with the same customer on a grid-tie system attached as gridTie.
+ * If the grid-tie system cannot be sized, the hybrid quote says why and has no gridTie.
+ */
+export function calculateComparison(input: CalculatorInput): QuoteResult {
+  const hybrid = calculateQuote({ ...input, systemType: 'hybrid' });
+  try {
+    return { ...hybrid, gridTie: calculateQuote({ ...input, systemType: 'grid-tie' }) };
+  } catch (e) {
+    return { ...hybrid, warnings: [...hybrid.warnings, `No grid-tie comparison: ${(e as Error).message}`] };
+  }
 }
 
 /** Exposed for unit tests only. Not part of the public API. */
