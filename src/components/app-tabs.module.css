@@ -1,0 +1,42 @@
+/* Top navigation on web. Spacing matches Spacing / Radius in constants/theme.ts. */
+.links {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+.link {
+  padding: 7.2px 16px;
+  border-radius: 3px;
+}
+
+/* Stacks "Brylliant" over "SOLAR", as a React Native View would. */
+.wordmark {
+  display: flex;
+  flex-direction: column;
+}
+
+.narrow {
+  display: none;
+}
+
+/* Phones: drop the wordmark and shorten labels so all four links fit. */
+@media (max-width: 559px) {
+  .wordmark,
+  .wide {
+    display: none;
+  }
+
+  .narrow {
+    display: inline;
+  }
+
+  .links {
+    gap: 0;
+  }
+
+  .link {
+    padding: 7.2px 8px;
+  }
+}

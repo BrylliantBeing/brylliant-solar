@@ -1,14 +1,13 @@
 import type { DateOrder, QuoteResult } from '@calculator/solarQuoteCalculator';
-import { Platform } from 'react-native';
 
+import { apiUrl } from '@/lib/api-base';
 import type { defaultFieldText, defaultToggles } from '@/lib/quote-input';
 
 /**
  * Saved quotes, stored in MySQL through public/api/quotes.php (staff session
  * required). Relative on web so the session cookie stays first-party.
  */
-const ENDPOINT =
-  Platform.OS === 'web' ? '/api/quotes.php' : 'https://solar.brylletan.com/api/quotes.php';
+const ENDPOINT = apiUrl('/api/quotes.php');
 
 export type DataSource = { text: string; fileName: string | null };
 

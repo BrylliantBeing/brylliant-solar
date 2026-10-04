@@ -20,6 +20,11 @@ export default function AppTabs() {
         <NativeTabs.Trigger.Icon sf="sun.max.fill" md="wb_sunny" />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="about">
+        <NativeTabs.Trigger.Label>About</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon sf="info.circle.fill" md="info" />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="book">
         <NativeTabs.Trigger.Label>Book</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="calendar" md="event" />

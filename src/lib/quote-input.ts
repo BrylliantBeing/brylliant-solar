@@ -245,6 +245,12 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
         unit: 'max',
         help: 'SPE12000ES: 2 strings of 10 × 720 W (490 V Voc, under 550 V)',
       },
+      {
+        key: 'inverterChargeKw',
+        label: 'Battery charging from panels',
+        unit: 'kW per inverter',
+        help: 'DC charger limit; panel power above this plus the inverter rating is clipped',
+      },
       { key: 'inverterPriceUsd', label: 'Inverter price', unit: 'US$ each' },
       { key: 'gridTieInverterKw', label: 'Grid-tie inverter rating', unit: 'kW', help: 'Comparison only' },
       {

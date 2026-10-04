@@ -40,6 +40,19 @@ export interface SunProfile {
   source: string;
   /** True for the built-in placeholder, which triggers a warning */
   isPlaceholder?: boolean;
+  /** How power varies within each hour. Without it, clipping is judged on hourly averages and understated. */
+  spread?: SunSpread;
+}
+
+/**
+ * The logged power samples in each month and hour, sorted and grouped into levels.
+ * Clipping happens in clear-sky and cloud-edge peaks that an hourly average hides.
+ */
+export interface SunSpread {
+  /** Share of the time each level stands for; sums to 1 */
+  weights: number[];
+  /** kW per kWp at each level: levels[month 0–11][hour 0–23][level], lowest first */
+  levels: number[][][];
 }
 
 /** One row from the operational inverter export (.xlsx) */
@@ -58,6 +71,7 @@ export interface QuoteDefaults {
   inverterPriceUsd: number;         // USD per inverter
   inverterKw: number;               // kW per inverter (paralleled)
   inverterMaxPanels: number;        // panels one inverter's PV inputs can take
+  inverterChargeKw: number;         // kW one inverter charges the battery with from the panels (DC side)
   batteryPriceUsd: number;          // USD per battery unit
   batteryUnitKwh: number;           // kWh per battery unit
   laborCost: number;                // PHP per job
@@ -177,7 +191,10 @@ export interface QuoteResult {
     annualSolarKwh: number;
     annualImportKwh: number;
     annualExportKwh: number;
+    /** Solar lost when the grid is down or the battery is full with nowhere to export */
     annualCurtailedKwh: number;
+    /** Solar above what the inverters and battery chargers can take. Missing on quotes saved before it existed. */
+    annualClippedKwh?: number;
     exportToImportRatio: number;
   };
   outageCoverage: {
@@ -237,6 +254,7 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   inverterPriceUsd: 720, // Growatt SPE12000ES
   inverterKw: 12,
   inverterMaxPanels: 20, // 2 strings of 10: 10 × 49.04 V Voc = 490 V, under the 550 V input limit
+  inverterChargeKw: 12, // assumed ~250 A at 48 V; confirm against the SPE12000ES datasheet
   batteryPriceUsd: 980,
   batteryUnitKwh: 10,
   laborCost: 20625,
@@ -246,8 +264,8 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   batteryReserve: 0.4,
   outagePercentile: 0.8,
   minAfterSunsetHours: 3,
-  systemLossFactor: 1,
-  batteryRoundTripEfficiency: 1,
+  systemLossFactor: 0.95, // inverter conversion and AC wiring; the logged sun already includes panel heat and soiling
+  batteryRoundTripEfficiency: 0.9, // typical lithium with a hybrid inverter
   minBatteryUnits: 1,
   maxBatteryUnits: 20,
   reserveAppliesDuringOutages: false,
@@ -461,6 +479,11 @@ function percentile(values: number[], p: number): number {
 
 function median(values: number[]): number {
   return percentile(values, 0.5);
+}
+
+/** Whole number with thousands separators, without Intl so it reads the same on every device. */
+function num0(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function round2(value: number): number {
@@ -758,18 +781,24 @@ export function buildSunProfile(
   const maxGap = options.maxGapMinutes !== undefined ? options.maxGapMinutes * 60000 : 2 * interval;
 
   // Integrate power over time, split exactly at hour boundaries.
-  const days = new Map<string, { month: number; energy: number[]; daylightMs: number }>();
+  const days = new Map<string, { month: number; energy: number[]; power: number[][]; daylightMs: number }>();
   const dayEntry = (ms: number) => {
     const key = dayKey(ms);
     let e = days.get(key);
     if (!e) {
-      e = { month: wallParts(ms).month - 1, energy: new Array(24).fill(0), daylightMs: 0 };
+      e = {
+        month: wallParts(ms).month - 1,
+        energy: new Array(24).fill(0),
+        power: Array.from({ length: 24 }, () => []),
+        daylightMs: 0,
+      };
       days.set(key, e);
     }
     return e;
   };
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
+    dayEntry(s.t).power[wallParts(s.t).hour].push(s.kW / kwp);
     const gap = i + 1 < samples.length ? samples[i + 1].t - s.t : interval;
     const duration = gap <= maxGap ? gap : interval; // a long gap is missing data, not energy
     let t = s.t;
@@ -787,12 +816,14 @@ export function buildSunProfile(
 
   // Average per month over days with good daylight coverage
   const sums = Array.from({ length: 12 }, () => new Array(24).fill(0));
+  const power = Array.from({ length: 12 }, () => Array.from({ length: 24 }, (): number[] => []));
   const daysUsedByMonth = new Array(12).fill(0);
   let daysExcluded = 0;
   for (const e of days.values()) {
     if (e.daylightMs < minCoverage * 12 * HOUR_MS) { daysExcluded++; continue; }
     daysUsedByMonth[e.month]++;
     e.energy.forEach((kWh, h) => { sums[e.month][h] += kWh; });
+    e.power.forEach((kW, h) => { power[e.month][h].push(...kW); });
   }
   const totalDays = daysUsedByMonth.reduce((a, b) => a + b, 0);
   if (totalDays === 0) throw new Error('No day in the sun log has enough daylight coverage to use.');
@@ -809,6 +840,9 @@ export function buildSunProfile(
     }
     return row.map((v) => v / daysUsedByMonth[m] / kwp);
   });
+  const overallLevels = Array.from({ length: 24 }, (_, h) => spreadLevels(power.flatMap((month) => month[h])));
+  const levels = power.map((month, m) =>
+    daysUsedByMonth[m] === 0 ? overallLevels.map((l) => [...l]) : month.map(spreadLevels));
   if (missing.length > 0) {
     warnings.push(`No usable sun data for ${missing.join(', ')}. The all-month average is used for those months.`);
   }
@@ -829,6 +863,7 @@ export function buildSunProfile(
     profile: {
       monthly,
       source: `Inverter log, ${totalDays} days, ${kwp} kWp reference system`,
+      spread: { weights: SPREAD_EDGES.slice(1).map((b, i) => round2(b - SPREAD_EDGES[i])), levels },
     },
     daysUsedByMonth,
     daysExcluded,
@@ -840,6 +875,23 @@ export function buildSunProfile(
     dailyYieldByMonth,
     warnings,
   };
+}
+
+/** Quantile edges of the sun spread: finer at the top, where the peaks that clip are. */
+const SPREAD_EDGES = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1];
+
+/** Mean of the samples between each pair of SPREAD_EDGES, so the weighted levels average to the samples' mean. */
+function spreadLevels(values: number[]): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  return SPREAD_EDGES.slice(1).map((b, i) => {
+    if (n === 0) return 0;
+    const from = Math.min(n - 1, Math.floor(SPREAD_EDGES[i] * n));
+    const to = Math.min(n, Math.max(from + 1, Math.floor(b * n)));
+    let sum = 0;
+    for (let k = from; k < to; k++) sum += sorted[k];
+    return sum / (to - from);
+  });
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -859,6 +911,14 @@ function normalizeSunProfile(input: CalculatorInput['sunProfile']): SunProfile {
   const ok = profile.monthly.length === 12 &&
     profile.monthly.every((row) => row.length === 24 && row.every((v) => Number.isFinite(v) && v >= 0));
   if (!ok) throw new Error('sunProfile must be 24 values or 12 months × 24 values, all ≥ 0.');
+  const spread = profile.spread;
+  if (spread) {
+    const k = spread.weights.length;
+    const spreadOk = k > 0 && Math.abs(spread.weights.reduce((a, b) => a + b, 0) - 1) < 1e-6 &&
+      spread.levels.length === 12 && spread.levels.every((month) => month.length === 24 &&
+        month.every((l) => l.length === k && l.every((v) => Number.isFinite(v) && v >= 0)));
+    if (!spreadOk) throw new Error('sunProfile.spread must have weights summing to 1 and 12 × 24 levels of the same length.');
+  }
   return profile;
 }
 
@@ -1049,6 +1109,8 @@ interface SimHour {
   monthIdx: number;   // 0–11 within the simulated year
   load: number;       // kWh
   sunPerKwp: number;  // kWh per kWp
+  sunLevels: number[]; // kW per kWp within the hour, weighted by SimContext.levelWeights
+  sunPeak: number;    // highest of sunLevels
   outFrac: number;    // share of the hour with the grid down
   outageId: number;   // -1 if none
 }
@@ -1061,6 +1123,7 @@ interface SimContext {
   outageCount: number;
   /** false for grid-tie: the inverter shuts down with the grid, so solar is lost during outages */
   solarInOutages: boolean;
+  levelWeights: number[];
 }
 
 /**
@@ -1068,7 +1131,11 @@ interface SimContext {
  * recorded. Each hour takes the reference-week load for its weekday, the sun for its
  * month, and any historical outage that fell in it.
  */
-function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOutage[], solarInOutages = true): SimContext {
+function buildSimContext(
+  ref: ReferenceWeek, sun: number[][], outages: ParsedOutage[], solarInOutages = true, spread?: SunSpread,
+): SimContext {
+  // Without a spread, the hourly average is the only level.
+  const levelsFor = (m: number, h: number) => spread ? spread.levels[m][h] : [sun[m][h]];
   const first = wallParts(ref.firstDay);
   const end = wallMs(first.year, first.month, 1);
   const start = wallMs(first.year - 1, first.month, 1);
@@ -1082,6 +1149,8 @@ function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOut
       monthIdx: monthLabels.length - 1,
       load: ref.hourly[p.weekday][p.hour],
       sunPerKwp: sun[p.month - 1][p.hour],
+      sunLevels: levelsFor(p.month - 1, p.hour),
+      sunPeak: Math.max(...levelsFor(p.month - 1, p.hour)),
       outFrac: 0,
       outageId: -1,
     });
@@ -1098,7 +1167,7 @@ function buildSimContext(ref: ReferenceWeek, sun: number[][], outages: ParsedOut
       h.outageId = id;
     }
   });
-  return { hours, monthLabels, start, end, outageCount, solarInOutages };
+  return { hours, monthLabels, start, end, outageCount, solarInOutages, levelWeights: spread?.weights ?? [1] };
 }
 
 interface SimResult {
@@ -1108,6 +1177,7 @@ interface SimResult {
   importKwh: number;
   exportKwh: number;
   curtailedKwh: number;
+  clippedKwh: number;
   unmetKwh: number;
   baseline: number;
   billAfter: number;
@@ -1116,12 +1186,36 @@ interface SimResult {
   outageEventsUncovered: number;
 }
 
-/** socTrace, if given, receives the battery charge (kWh) at the start of each hour. */
+/** Battery charging power (kW) of the inverters behind inverterKw. */
+function chargeKwFor(inverterKw: number, cfg: QuoteDefaults): number {
+  return (inverterKw / cfg.inverterKw) * cfg.inverterChargeKw;
+}
+
+/** Share of an hour's solar energy above capKw, from the spread of power within the hour. */
+function clippedShare(levels: number[], weights: number[], kwPerLevel: number, capKw: number): number {
+  let total = 0;
+  let above = 0;
+  for (let i = 0; i < levels.length; i++) {
+    const kw = levels[i] * kwPerLevel;
+    total += weights[i] * kw;
+    above += weights[i] * Math.max(0, kw - capKw);
+  }
+  return total > 0 ? above / total : 0;
+}
+
+/**
+ * Hour-by-hour energy flow. The panels feed two outputs: the inverters' AC side (house load,
+ * battery discharge and export share inverterKw) and the DC battery charger (chargeKwFor).
+ * Panel power above both, in the peaks within an hour, is clipped.
+ * socTrace, if given, receives the battery charge (kWh) at the start of each hour.
+ */
 function simulateYear(
   ctx: SimContext, systemKw: number, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
   socTrace?: number[],
 ): SimResult {
   const eff = cfg.batteryRoundTripEfficiency;
+  const chargeKw = chargeKwFor(inverterKw, cfg);
+  const kwPerLevel = systemKw * cfg.systemLossFactor;
   const normalFloor = batteryKwh * cfg.batteryReserve;
   const outageFloor = cfg.reserveAppliesDuringOutages ? normalFloor : 0;
   let soc = normalFloor;
@@ -1131,7 +1225,7 @@ function simulateYear(
   const mExport = new Array(n).fill(0);
   const mLoadUp = new Array(n).fill(0);
   const mLoad = new Array(n).fill(0);
-  let solar = 0, curtailed = 0, unmet = 0;
+  let solar = 0, curtailed = 0, clipped = 0, unmet = 0;
   const uncovered = new Set<number>();
 
   for (const h of ctx.hours) {
@@ -1144,30 +1238,39 @@ function simulateYear(
       if (share <= 0) continue;
       const load = h.load * share;
       const solarOn = gridUp || ctx.solarInOutages;
-      const g = solarOn ? gen * share : 0;
+      let g = solarOn ? gen * share : 0;
       if (!solarOn) curtailed += gen * share;
-      const limit = inverterKw * share; // inverter power limit for this part of the hour
+      const acLimit = inverterKw * share; // AC energy the inverters can pass in this part of the hour
+      const chargeLimit = Math.min(chargeKw * share, Math.max(0, (batteryKwh - soc) / eff));
+      const capKw = inverterKw + chargeLimit / share;
+      if (g > 0 && kwPerLevel * h.sunPeak > capKw) {
+        const clip = g * clippedShare(h.sunLevels, ctx.levelWeights, kwPerLevel, capKw);
+        clipped += clip;
+        g -= clip;
+      }
       if (gridUp) mLoadUp[h.monthIdx] += load;
-      if (g >= load) {
-        const surplus = g - load;
-        const charge = Math.min(surplus, limit, (batteryKwh - soc) / eff);
-        soc += charge * eff;
-        const rest = surplus - charge;
-        if (gridUp) {
-          const exp = Math.min(rest, limit);
-          mExport[h.monthIdx] += exp;
-          curtailed += rest - exp;
-        } else {
-          curtailed += rest; // grid down: nothing can be exported
-        }
+
+      const toLoad = Math.min(g, load, acLimit);
+      const charge = Math.min(g - toLoad, chargeLimit);
+      soc += charge * eff;
+      const rest = g - toLoad - charge;
+      const acLeft = acLimit - toLoad;
+      if (gridUp) {
+        const exp = Math.min(rest, acLeft);
+        mExport[h.monthIdx] += exp;
+        clipped += rest - exp;
       } else {
-        const deficit = load - g;
+        curtailed += rest; // grid down: nothing can be exported
+      }
+
+      const deficit = load - toLoad;
+      if (deficit > 0) {
         const floor = gridUp ? normalFloor : outageFloor;
-        const discharge = Math.max(0, Math.min(deficit, limit, soc - floor));
+        const discharge = Math.max(0, Math.min(deficit, acLeft, soc - floor));
         soc -= discharge;
-        const rest = deficit - discharge;
-        if (gridUp) mImport[h.monthIdx] += rest;
-        else if (rest > 1e-9) { unmet += rest; uncovered.add(h.outageId); }
+        const short = deficit - discharge;
+        if (gridUp) mImport[h.monthIdx] += short;
+        else if (short > 1e-9) { unmet += short; uncovered.add(h.outageId); }
       }
     }
   }
@@ -1202,6 +1305,7 @@ function simulateYear(
     importKwh: mImport.reduce((a, b) => a + b, 0),
     exportKwh: mExport.reduce((a, b) => a + b, 0),
     curtailedKwh: curtailed,
+    clippedKwh: clipped,
     unmetKwh: unmet,
     baseline,
     billAfter,
@@ -1237,18 +1341,18 @@ function batteryRuntimeHours(
   systemKw: number, batteryKwh: number, inverterKw: number, cfg: QuoteDefaults,
 ): number {
   const eff = cfg.batteryRoundTripEfficiency;
+  const chargeKw = chargeKwFor(inverterKw, cfg);
   const floor = cfg.reserveAppliesDuringOutages ? batteryKwh * cfg.batteryReserve : 0;
   let soc = socKwh;
   for (let i = 0; i < RUNTIME_CAP_HOURS; i++) {
     const p = wallParts(startMs + i * HOUR_MS);
     const load = ref.hourly[p.weekday][p.hour];
     const gen = systemKw * sun[p.month - 1][p.hour] * cfg.systemLossFactor;
-    if (gen >= load) {
-      soc += Math.max(0, Math.min(gen - load, inverterKw, (batteryKwh - soc) / eff)) * eff;
-      continue;
-    }
-    const deficit = load - gen;
-    const available = Math.max(0, Math.min(soc - floor, inverterKw));
+    const toLoad = Math.min(gen, load, inverterKw);
+    soc += Math.max(0, Math.min(gen - toLoad, chargeKw, (batteryKwh - soc) / eff)) * eff;
+    const deficit = load - toLoad;
+    if (deficit <= 0) continue;
+    const available = Math.max(0, Math.min(soc - floor, inverterKw - toLoad));
     if (available + 1e-9 < deficit) return i + available / deficit;
     soc -= deficit;
   }
@@ -1398,6 +1502,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   }
   if (cfg.inverterKw <= 0) throw new Error('inverterKw must be above 0.');
   if (cfg.inverterMaxPanels < 1) throw new Error('inverterMaxPanels must be at least 1.');
+  if (!(cfg.inverterChargeKw >= 0)) throw new Error('inverterChargeKw must be at least 0.');
+  if (!(cfg.systemLossFactor > 0 && cfg.systemLossFactor <= 1)) throw new Error('systemLossFactor must be above 0 and at most 1.');
   if (cfg.maxBatteryUnits < cfg.minBatteryUnits) throw new Error('maxBatteryUnits must be at least minBatteryUnits.');
 
   // Sun data
@@ -1440,7 +1546,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   const countForLoad = gridTie ? 0 : Math.max(1, Math.ceil(peakHourlyLoadKwh / cfg.inverterKw - 1e-9));
 
   // Simulated year
-  const ctx = buildSimContext(ref, sun, outages, !gridTie);
+  const ctx = buildSimContext(ref, sun, outages, !gridTie, sunProfile.spread);
   if (outages.length > 0 && ctx.outageCount === 0) {
     warnings.push(
       `No outage in the history falls in the simulated year (${formatWallTime(ctx.start).slice(0, 7)} to ` +
@@ -1493,6 +1599,18 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     'changes in load (e.g. more air-conditioning in April–May) are not captured.',
   );
   notes.push('Billing uses the reference week (the highest-consumption day per weekday), so the "before" bill is an upper estimate.');
+  const clippedPercent = sim.solarKwh > 0 ? (sim.clippedKwh / sim.solarKwh) * 100 : 0;
+  notes.push(
+    `Inverters clip ${num0(sim.clippedKwh)} kWh a year (${clippedPercent.toFixed(1)}% of panel output) at ` +
+    `${round2(dcAcRatio)}× panel to inverter capacity` +
+    (gridTie ? '.' : `; up to ${round2(chargeKwFor(inverterTotalKw, cfg))} kW more can go straight into the battery.`),
+  );
+  if (!sunProfile.spread) {
+    notes.push(
+      'The sun profile has no within-hour spread, so clipping is judged on hourly averages and understated. ' +
+      'Rebuild it with scripts/buildSunProfile.ts.',
+    );
+  }
   if (gridTie) {
     notes.push(
       `Grid-tie: ${cfg.inverterKw} kW inverters taking at most ${cfg.inverterMaxPanels} panels each, set by the ` +
@@ -1574,6 +1692,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       annualImportKwh: round2(sim.importKwh),
       annualExportKwh: round2(sim.exportKwh),
       annualCurtailedKwh: round2(sim.curtailedKwh),
+      annualClippedKwh: round2(sim.clippedKwh),
       exportToImportRatio: cfg.generationCharge / cfg.electricityRate,
     },
     outageCoverage: {
@@ -1629,5 +1748,5 @@ export function calculateComparison(input: CalculatorInput): QuoteResult {
 /** Exposed for unit tests only. Not part of the public API. */
 export const __test = {
   outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear, sizePanels,
-  batteryRuntimeHours, runtimeStartHours, sizeBattery,
+  batteryRuntimeHours, runtimeStartHours, sizeBattery, spreadLevels, clippedShare,
 };

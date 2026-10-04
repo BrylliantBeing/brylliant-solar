@@ -1,5 +1,6 @@
 import { createContext, use, useCallback, useEffect, useState, type PropsWithChildren } from 'react';
-import { Platform } from 'react-native';
+
+import { apiUrl } from '@/lib/api-base';
 
 /**
  * Staff sign-in for /internal, backed by the PHP session in public/api/auth.php.
@@ -8,8 +9,7 @@ import { Platform } from 'react-native';
  *
  * Relative on web so the cookie stays first-party; absolute on native.
  */
-const ENDPOINT =
-  Platform.OS === 'web' ? '/api/auth.php' : 'https://solar.brylletan.com/api/auth.php';
+const ENDPOINT = apiUrl('/api/auth.php');
 
 export type StaffUser = { username: string; name: string };
 

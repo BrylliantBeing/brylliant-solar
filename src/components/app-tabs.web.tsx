@@ -1,10 +1,11 @@
 import { TabList, TabSlot, TabTrigger, Tabs, type TabListProps, type TabTriggerSlotProps } from 'expo-router/ui';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import classes from './app-tabs.module.css';
 import { BrandMark } from './brand-mark';
 import { ThemedText } from './themed-text';
 
-import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { MaxContentWidth, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 export default function AppTabs() {
@@ -19,8 +20,15 @@ export default function AppTabs() {
           <TabTrigger name="estimate" href="/estimate" asChild>
             <NavButton>Estimate</NavButton>
           </TabTrigger>
+          <TabTrigger name="about" href="/about" asChild>
+            <NavButton>About</NavButton>
+          </TabTrigger>
           <TabTrigger name="book" href="/book" asChild>
-            <NavButton>Book a survey</NavButton>
+            <NavButton>
+              {/* The site is exported as static HTML, so the phone layout is a CSS media query, not a JS width check. */}
+              <span className={classes.wide}>Book a survey</span>
+              <span className={classes.narrow}>Book</span>
+            </NavButton>
           </TabTrigger>
         </NavBar>
       </TabList>
@@ -38,16 +46,16 @@ function NavBar({ style, ...props }: TabListProps) {
       <View style={styles.barInner}>
         <View style={styles.brand}>
           <BrandMark size={30} />
-          <View>
+          <div className={classes.wordmark}>
             <ThemedText type="heading" style={{ fontSize: 15 }}>
               Brylliant
             </ThemedText>
             <ThemedText type="eyebrow" themeColor="textMuted" style={{ fontSize: 7.5, letterSpacing: 3 }}>
               SOLAR
             </ThemedText>
-          </View>
+          </div>
         </View>
-        <View style={styles.links}>{props.children}</View>
+        <div className={classes.links}>{props.children}</div>
       </View>
     </View>
   );
@@ -57,15 +65,13 @@ function NavButton({ children, isFocused, ...props }: TabTriggerSlotProps) {
   const t = useTheme();
   return (
     <Pressable {...props} style={({ pressed }) => pressed && styles.pressed}>
-      <View
-        style={[
-          styles.link,
-          isFocused && { backgroundColor: t.backgroundSelected },
-        ]}>
+      <div
+        className={classes.link}
+        style={isFocused ? { backgroundColor: t.backgroundSelected } : undefined}>
         <ThemedText type="link" themeColor={isFocused ? 'text' : 'textMuted'}>
           {children}
         </ThemedText>
-      </View>
+      </div>
     </Pressable>
   );
 }
@@ -78,6 +84,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderBottomWidth: 1,
     zIndex: 50,
+    overflow: 'hidden', // never let the bar widen the page
   },
   barInner: {
     width: '100%',
@@ -91,7 +98,5 @@ const styles = StyleSheet.create({
     gap: Spacing.three,
   },
   brand: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  links: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
-  link: { paddingHorizontal: Spacing.three, paddingVertical: Spacing.two * 0.9, borderRadius: Radius.sm },
   pressed: { opacity: 0.7 },
 });

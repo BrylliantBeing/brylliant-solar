@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Platform, StyleSheet, TextInput, View } from 'react-native';
+import { apiUrl } from '@/lib/api-base';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   FadeIn,
@@ -27,8 +28,7 @@ const WHEN = ['Weekday morning', 'Weekday afternoon', 'Saturday', 'Any time'] as
  * local dev server does not post to production; absolute on native, which has no
  * origin to be relative to.
  */
-const ENDPOINT =
-  Platform.OS === 'web' ? '/api/quote.php' : 'https://solar.brylletan.com/api/quote.php';
+const ENDPOINT = apiUrl('/api/quote.php');
 
 type Status = 'idle' | 'sending' | 'sent' | 'fallback';
 

@@ -711,6 +711,9 @@ function Results({
             <KeyValue label="Imported" value={`${num(q.energy.annualImportKwh)} kWh`} />
             <KeyValue label="Exported" value={`${num(q.energy.annualExportKwh)} kWh`} />
             <KeyValue label="Curtailed" value={`${num(q.energy.annualCurtailedKwh)} kWh`} />
+            {q.energy.annualClippedKwh !== undefined && (
+              <KeyValue label="Clipped by inverters" value={`${num(q.energy.annualClippedKwh)} kWh`} />
+            )}
             <KeyValue label="Peak hourly load" value={`${num(q.inverter.peakHourlyLoadKwh, 2)} kWh`} />
           </Panel>
         </View>

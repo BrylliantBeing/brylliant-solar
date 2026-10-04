@@ -13,7 +13,9 @@ const {
   outageNeedKwh, buildReferenceWeek, parseConsumption, buildSimContext, simulateYear, batteryRuntimeHours,
   runtimeStartHours,
 } = __test;
-const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS };
+// Lossless, so the hand-worked numbers below stay simple; full quotes use the real defaults.
+const cfg: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS, systemLossFactor: 1, batteryRoundTripEfficiency: 1 };
+const defaults: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS };
 const iso = (s: DateInputLike) => formatWallTime(parseZamboangaDateTime(s));
 type DateInputLike = string | number | Date;
 
@@ -294,8 +296,8 @@ test('Quote: meets 95%, and one panel fewer would not', () => {
   assert.ok(q.bill.reductionPercent >= 95, String(q.bill.reductionPercent));
   const ref = refFrom(week());
   const parsed = outageLog.map((o) => ({ start: parseZamboangaDateTime(o.start), end: parseZamboangaDateTime(o.end) }));
-  const ctx = buildSimContext(ref, realSun.monthly, parsed);
-  const fewer = simulateYear(ctx, ((q.panels.count - 1) * 720) / 1000, q.battery.installedKwh, q.inverter.totalKw, cfg);
+  const ctx = buildSimContext(ref, realSun.monthly, parsed, true, realSun.spread);
+  const fewer = simulateYear(ctx, ((q.panels.count - 1) * 720) / 1000, q.battery.installedKwh, q.inverter.totalKw, defaults);
   assert.ok(fewer.billAfter > fewer.baseline * 0.05);
   assert.equal(q.bill.monthly.length, 12);
   assert.equal(q.simulation.start, '2025-09-01T00:00:00');
@@ -319,8 +321,8 @@ test('Quote: the simulated year covers the outage percentile, and one unit fewer
   assert.ok(eventsFullyCovered >= 0.8 * eventsInSimulatedYear);
   const ref = refFrom(week());
   const parsed = outageLog.map((o) => ({ start: parseZamboangaDateTime(o.start), end: parseZamboangaDateTime(o.end) }));
-  const ctx = buildSimContext(ref, realSun.monthly, parsed);
-  const fewer = simulateYear(ctx, q.panels.systemKw, q.battery.installedKwh - 10, q.inverter.totalKw, cfg);
+  const ctx = buildSimContext(ref, realSun.monthly, parsed, true, realSun.spread);
+  const fewer = simulateYear(ctx, q.panels.systemKw, q.battery.installedKwh - 10, q.inverter.totalKw, defaults);
   assert.ok(fewer.outageEvents - fewer.outageEventsUncovered < 0.8 * fewer.outageEvents);
 });
 
@@ -337,14 +339,14 @@ test('Quote: the battery grows until a typical outage after sunset lasts minAfte
   assert.equal(on.battery.afterSunsetTargetHours, 3);
   // One unit fewer, with the same panels and inverters, falls short of the target.
   const ref = refFrom(heavyEvenings());
-  const ctx = buildSimContext(ref, realSun.monthly, []);
+  const ctx = buildSimContext(ref, realSun.monthly, [], true, realSun.spread);
   const kwh = on.battery.installedKwh - 10;
   const trace: number[] = [];
-  simulateYear(ctx, on.panels.systemKw, kwh, on.inverter.totalKw, cfg, trace);
+  simulateYear(ctx, on.panels.systemKw, kwh, on.inverter.totalKw, defaults, trace);
   const runtimes: number[] = [];
   for (let day = ctx.start; day < ctx.end; day += 86400000) {
     const at = day + on.outageRuntime!.afterSunset.startHour * 3600000;
-    runtimes.push(batteryRuntimeHours(at, trace[(at - ctx.start) / 3600000], ref, realSun.monthly, on.panels.systemKw, kwh, on.inverter.totalKw, cfg));
+    runtimes.push(batteryRuntimeHours(at, trace[(at - ctx.start) / 3600000], ref, realSun.monthly, on.panels.systemKw, kwh, on.inverter.totalKw, defaults));
   }
   runtimes.sort((a, b) => a - b);
   const mid = (runtimes.length - 1) / 2;
@@ -402,6 +404,84 @@ test('Quote: battery lasts longer when the outage starts at peak sun than after 
   assert.ok(afterSunset.medianStartKwh <= q.battery.installedKwh);
 });
 
+// ── Inverter limits and clipping ────────────────────────────
+
+const year = (s: { monthly: unknown[] }) => s.monthly.length;
+const flatLoad = (kWh: number) => refFrom(readings('2026-09-01 00:00', 168, () => kWh));
+/** Every month and hour of a spread with the given levels at 11:00 and 12:00, nothing else. */
+const spreadAt = (levels: number[], weights: number[]) => ({
+  weights,
+  levels: Array.from({ length: 12 }, () =>
+    Array.from({ length: 24 }, (_, h) => (h === 11 || h === 12 ? levels : levels.map(() => 0)))),
+});
+
+test('Inverter: house load, export and battery discharge share the AC rating', () => {
+  // 20 kWp × 1 kWh/kWp at noon into one 12 kW grid-tie inverter, 5 kWh load: 5 to the house, 7 exported, 8 clipped.
+  const ctx = buildSimContext(flatLoad(5), sunAll({ 12: 1 }), [], false);
+  const sim = simulateYear(ctx, 20, 0, 12, cfg);
+  const days = (ctx.end - ctx.start) / 86400000;
+  assert.equal(year(sim), 12);
+  assert.ok(Math.abs(sim.exportKwh - 7 * days) < 1e-6, String(sim.exportKwh));
+  assert.ok(Math.abs(sim.clippedKwh - 8 * days) < 1e-6, String(sim.clippedKwh));
+  // Load above the inverter rating: the battery cannot add more than the inverter passes.
+  const big = simulateYear(buildSimContext(flatLoad(30), sunAll({}), []), 0, 1000, 12, cfg);
+  const night = simulateYear(buildSimContext(flatLoad(30), sunAll({}), []), 0, 0, 12, cfg);
+  assert.ok(night.importKwh - big.importKwh <= 0.6 * 1000 + 1e-6); // only the usable battery, never more
+  assert.ok(big.importKwh >= (30 - 12) * 24 * 365);
+});
+
+test('Inverter: panel power above the AC rating charges the battery on the DC side instead of clipping', () => {
+  const ctx = buildSimContext(flatLoad(0), sunAll({ 12: 1 }), []);
+  const sim = simulateYear(ctx, 20, 1e6, 12, cfg); // 12 kW charger, battery never fills
+  const days = (ctx.end - ctx.start) / 86400000;
+  assert.equal(sim.clippedKwh, 0);
+  assert.equal(sim.exportKwh, 8 * days);
+  // A charger limited to 4 kW: 4 to the battery, 12 exported, 4 clipped.
+  const slow = simulateYear(ctx, 20, 1e6, 12, { ...cfg, inverterChargeKw: 4 });
+  assert.ok(Math.abs(slow.clippedKwh - 4 * days) < 1e-6, String(slow.clippedKwh));
+});
+
+test('Clipping: peaks within the hour clip even when the hourly average fits the inverter', () => {
+  // Average 0.5 kW/kWp, but half the hour at 0.9: 72 kWp on 60 kW clips the top half.
+  const sun = sunAll({ 11: 0.5, 12: 0.5 });
+  const spread = spreadAt([0.1, 0.9], [0.5, 0.5]);
+  const averaged = simulateYear(buildSimContext(flatLoad(0), sun, [], false), 72, 0, 60, cfg);
+  const peaky = simulateYear(buildSimContext(flatLoad(0), sun, [], false, spread), 72, 0, 60, cfg);
+  assert.equal(averaged.clippedKwh, 0);
+  // Per hour: 0.5 × (64.8 − 60) = 2.4 kWh clipped of 36 kWh.
+  const hours = 2 * ((buildSimContext(flatLoad(0), sun, []).end - buildSimContext(flatLoad(0), sun, []).start) / 86400000);
+  assert.ok(Math.abs(peaky.clippedKwh - 2.4 * hours) < 1e-6, String(peaky.clippedKwh));
+  assert.ok(Math.abs(peaky.exportKwh - (36 - 2.4) * hours) < 1e-6);
+  // A larger inverter clips nothing.
+  assert.equal(simulateYear(buildSimContext(flatLoad(0), sun, [], false, spread), 72, 0, 72, cfg).clippedKwh, 0);
+});
+
+test('Sun profile: the spread levels average to the samples and keep the peaks', () => {
+  const values = Array.from({ length: 200 }, (_, i) => i / 100); // 0 … 1.99
+  const levels = __test.spreadLevels(values);
+  const weights = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.05, 0.03, 0.01, 0.01];
+  const mean = levels.reduce((a, l, i) => a + l * weights[i], 0);
+  assert.ok(Math.abs(mean - 0.995) < 1e-9, String(mean));
+  assert.ok(Math.abs(levels[12] - 1.985) < 1e-9); // mean of the top 1%: 1.98 and 1.99
+  const built = buildSunProfile(viaXlsx(sunRows(3, true))).profile.spread!;
+  assert.deepEqual(built.weights, weights);
+  assert.ok(built.levels[8][12][12] > built.levels[8][12][0]);
+});
+
+test('Quote: the built-in profile has a spread, and clipping is reported', () => {
+  const q = calculateQuote({ consumption: heavyEvenings(), outages: outageLog });
+  assert.ok(q.energy.annualClippedKwh! >= 0);
+  assert.ok(q.notes.some((n) => n.startsWith('Inverters clip')), JSON.stringify(q.notes));
+  assert.ok(!q.notes.some((n) => n.includes('no within-hour spread')));
+  const flat = calculateQuote({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun.monthly });
+  assert.ok(flat.notes.some((n) => n.includes('no within-hour spread')));
+});
+
+test('Defaults: inverter and battery losses are on', () => {
+  assert.ok(ZAMBOANGA_DEFAULTS.systemLossFactor < 1);
+  assert.ok(ZAMBOANGA_DEFAULTS.batteryRoundTripEfficiency < 1);
+});
+
 // ── Grid-tie comparison ─────────────────────────────────────
 
 test('Grid-tie: no batteries, Deye inverters set by the panel count, same bill target', () => {
@@ -443,7 +523,7 @@ test('Comparison: the hybrid quote carries the grid-tie quote for the same custo
 });
 
 test('Comparison: a grid-tie system that cannot be sized leaves a warning, not an error', () => {
-  const c = calculateComparison({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun, maxPanels: 16 }); // hybrid needs 14, grid-tie 18
+  const c = calculateComparison({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun, maxPanels: 17 }); // hybrid needs 15, grid-tie 19
   assert.equal(c.gridTie, undefined);
   assert.ok(c.warnings.some((w) => w.startsWith('No grid-tie comparison')), JSON.stringify(c.warnings));
 });
