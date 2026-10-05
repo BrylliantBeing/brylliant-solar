@@ -606,7 +606,6 @@ function Results({
 }) {
   const t = useTheme();
   const { annualSaving, years } = payback(q);
-  const hardware = q.pricing.panels + q.pricing.inverters + q.pricing.batteries;
   // Quotes saved before USD pricing have no rate or USD figures.
   const fx = q.pricing.usdToPhp ? { rate: q.pricing.usdToPhp, usd: q.pricing.usd } : null;
   const each = (count: number, php: number, usdTotal?: number) =>
@@ -667,15 +666,56 @@ function Results({
           value={peso(q.pricing.inverters)}
         />
         <KeyValue label="Batteries" sub={q.battery.units ? each(q.battery.units, q.pricing.batteries, fx?.usd.batteries) : undefined} value={peso(q.pricing.batteries)} />
-        <KeyValue
-          label="Mounting & cabling"
-          sub={`${num(hardware > 0 ? (q.pricing.mountingCabling / hardware) * 100 : 0)}% of ${peso(hardware)} hardware`}
-          value={peso(q.pricing.mountingCabling)}
-        />
+        {/* Quotes saved before itemised mounting have only the combined figure. */}
+        {q.pricing.mounting !== undefined ? (
+          <>
+            <KeyValue label="Rails & mounts" sub={each(q.panels.count, q.pricing.mounting, fx?.usd.mounting)} value={peso(q.pricing.mounting)} />
+            <KeyValue
+              label="PV cable"
+              sub={`${each(q.pricing.pvCableRolls, q.pricing.pvCable, fx?.usd.pvCable)} · rolls`}
+              value={peso(q.pricing.pvCable)}
+            />
+          </>
+        ) : (
+          <KeyValue label="Mounting & cabling" value={peso(q.pricing.mountingCabling)} />
+        )}
         <KeyValue label="Labour" value={peso(q.pricing.labor)} />
+        {/* Quotes saved before freight was added have none. */}
+        {q.pricing.freight !== undefined ? (
+          <KeyValue
+            label="Freight"
+            sub={`${q.panels.count} × ${peso(q.pricing.freight / Math.max(1, q.panels.count))} share of the container`}
+            value={peso(q.pricing.freight)}
+          />
+        ) : null}
+        {/* Quotes saved before the electrical parts list have none. */}
+        {q.pricing.electricalParts ? (
+          <KeyValue
+            label="Electrical parts"
+            sub={`${q.pricing.electricalParts.length} items · breakers, wire, earthing, conduit`}
+            value={peso(q.pricing.electrical)}
+          />
+        ) : null}
+        {/* Quotes saved before net metering was itemised have it inside misc. */}
+        {q.pricing.netMetering !== undefined ? <KeyValue label="Net metering" value={peso(q.pricing.netMetering)} /> : null}
         <KeyValue label="Miscellaneous" value={peso(q.pricing.misc)} />
         <KeyValue label="Total" value={peso(q.pricing.total)} total />
       </Panel>
+
+      {q.pricing.electricalParts?.length ? (
+        <Panel title="Electrical parts">
+          <Table
+            head={['Part', 'Qty', 'Each', 'Total']}
+            rows={q.pricing.electricalParts.map((p) => [
+              p.estimate ? `${p.name} (est.)` : p.name,
+              p.unit ? `${num(p.quantity)} ${p.unit}` : num(p.quantity),
+              peso(p.php),
+              peso(p.total),
+            ])}
+            foot={['Total', '', '', peso(q.pricing.electrical)]}
+          />
+        </Panel>
+      ) : null}
 
       {q.gridTie ? <GridTieComparison hybrid={q} gridTie={q.gridTie} /> : null}
 

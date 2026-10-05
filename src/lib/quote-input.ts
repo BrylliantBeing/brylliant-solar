@@ -269,8 +269,25 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
   {
     title: 'Job costs',
     numbers: [
-      { key: 'mountingCablingRate', label: 'Mounting & cabling', unit: '% of hardware', scale: 100 },
+      { key: 'mountingPerPanelUsd', label: 'Rails & mounts', unit: 'US$ per panel', help: 'US$2,500 for 100 panels' },
+      { key: 'pvCableRollUsd', label: 'PV cable roll', unit: 'US$ each' },
+      { key: 'pvCableRollMeters', label: 'PV cable roll length', unit: 'm' },
+      {
+        key: 'pvCableMetersPerString',
+        label: 'PV cable per string',
+        unit: 'm',
+        help: 'Red + black from the array to the inverter; ~20 m run assumed',
+      },
+      { key: 'panelsPerString', label: 'Panels per string', unit: 'panels' },
       { key: 'laborCost', label: 'Labour', unit: '₱ per job' },
+      { key: 'freightPerContainer', label: 'Freight', unit: '₱ per container', help: 'Panels and rails' },
+      {
+        key: 'panelsPerContainer',
+        label: 'Panels per container',
+        unit: 'panels',
+        help: 'Freight is shared by panel count; 165 = 5 pallets of 33',
+      },
+      { key: 'netMeteringCost', label: 'Net metering', unit: '₱ per job', help: 'Application with ZAMCELCO' },
       { key: 'miscCost', label: 'Miscellaneous', unit: '₱ per job' },
     ],
   },
@@ -391,8 +408,17 @@ export function quoteSummaryText(q: QuoteResult, customer: string): string {
     `Panels ${peso(q.pricing.panels)}`,
     `Inverters ${peso(q.pricing.inverters)}`,
     `Batteries ${peso(q.pricing.batteries)}`,
-    `Mounting & cabling ${peso(q.pricing.mountingCabling)}`,
+    ...(q.pricing.mounting !== undefined
+      ? [
+        `Rails & mounts ${peso(q.pricing.mounting)}`,
+        `PV cable (${q.pricing.pvCableRolls} roll${q.pricing.pvCableRolls === 1 ? '' : 's'}) ${peso(q.pricing.pvCable)}`,
+      ]
+      : [`Mounting & cabling ${peso(q.pricing.mountingCabling)}`]),
     `Labour ${peso(q.pricing.labor)}`,
+    ...(q.pricing.freight !== undefined ? [`Freight ${peso(q.pricing.freight)}`] : []),
+    ...(q.pricing.electricalParts ? [`Electrical parts ${peso(q.pricing.electrical)}`] : []),
+    // Quotes saved before net metering was itemised have it inside misc.
+    ...(q.pricing.netMetering !== undefined ? [`Net metering ${peso(q.pricing.netMetering)}`] : []),
     `Miscellaneous ${peso(q.pricing.misc)}`,
     `Total ${peso(q.pricing.total)}`,
     '',

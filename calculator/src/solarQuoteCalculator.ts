@@ -62,6 +62,23 @@ export interface SunOutputRow {
   [column: string]: unknown;
 }
 
+/** What an electrical part's quantity grows with */
+export type PartBasis = 'job' | 'inverter' | 'string' | 'panel';
+
+/** One line of the electrical parts list, bought locally in PHP */
+export interface ElectricalPart {
+  name: string;
+  /** PHP per unit */
+  php: number;
+  /** Units per basis, e.g. 4 MC4 pairs per string or 20 m of wire per inverter */
+  qty: number;
+  per: PartBasis;
+  /** Shown after the quantity, e.g. "m"; defaults to a plain count */
+  unit?: string;
+  /** True until the price comes from a store quote */
+  estimate?: boolean;
+}
+
 export interface QuoteDefaults {
   electricityRate: number;          // PHP/kWh paid on import
   generationCharge: number;         // PHP/kWh credited on export
@@ -75,7 +92,15 @@ export interface QuoteDefaults {
   batteryPriceUsd: number;          // USD per battery unit
   batteryUnitKwh: number;           // kWh per battery unit
   laborCost: number;                // PHP per job
-  mountingCablingRate: number;      // fraction of (panels + batteries + inverters)
+  mountingPerPanelUsd: number;      // USD of rails and mounts per panel
+  pvCableRollUsd: number;           // USD per roll of PV cable
+  pvCableRollMeters: number;        // m per roll
+  pvCableMetersPerString: number;   // m of PV cable per string (red + black, array to inverter)
+  panelsPerString: number;          // panels wired in series per string
+  freightPerContainer: number;      // PHP per container, panels and rails
+  panelsPerContainer: number;       // panels one container carries; freight is shared per panel
+  netMeteringCost: number;          // PHP per job, net-metering application
+  electricalParts: ElectricalPart[]; // breakers, wire, earthing, conduit
   miscCost: number;                 // PHP per job
   targetReduction: number;          // 0.95 = 95% bill reduction
   batteryReserve: number;           // 0.4 = 40% kept back in normal operation
@@ -224,12 +249,24 @@ export interface QuoteResult {
   pricing: {
     usdToPhp: number;
     /** Hardware in USD, as the supplier prices it */
-    usd: { panels: number; inverters: number; batteries: number };
+    usd: { panels: number; inverters: number; batteries: number; mounting: number; pvCable: number };
     panels: number;
     inverters: number;
     batteries: number;
+    /** Rails and mounts */
+    mounting: number;
+    /** PV cable, bought in whole rolls */
+    pvCable: number;
+    pvCableRolls: number;
+    /** mounting + pvCable */
     mountingCabling: number;
+    /** The job's share of container freight, by panel count */
+    freight: number;
+    /** Sum of electricalParts */
+    electrical: number;
+    electricalParts: { name: string; quantity: number; unit?: string; php: number; total: number; estimate: boolean }[];
     labor: number;
+    netMetering: number;
     misc: number;
     total: number;
   };
@@ -258,8 +295,42 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   batteryPriceUsd: 980,
   batteryUnitKwh: 10,
   laborCost: 20625,
-  mountingCablingRate: 0.4,
-  miscCost: 1500,
+  mountingPerPanelUsd: 25, // US$2,500 of rails and mounts for 100 panels
+  pvCableRollUsd: 90,
+  pvCableRollMeters: 100,
+  pvCableMetersPerString: 40, // assumed ~20 m run from array to inverter, red + black; measure on site
+  panelsPerString: 10, // 10 × 49.04 V Voc = 490 V, under the 550 V input limit
+  freightPerContainer: 350000, // 20 ft container, forwarder estimate
+  panelsPerContainer: 165, // 5 pallets of 33, with rails and hardware
+  netMeteringCost: 1500,
+  electricalParts: [
+    // Estimates for a grid-tie job, 2 strings of 10 × 720 W into one 10 kW inverter. Ratings from the
+    // JKM720N (Isc 18.67 A, 35 A series fuse) and SUN-10K-G02P1 (50 A max AC) datasheets.
+    // DC side
+    { name: 'DC breaker 2P 32 A 600 V+', php: 425, qty: 1, per: 'string', estimate: true },
+    { name: 'DC surge protector Type II 600 V', php: 500, qty: 1, per: 'string', estimate: true },
+    { name: 'MC4 pair, home runs', php: 70, qty: 4, per: 'string', estimate: true },
+    { name: 'MC4 pair, jumper spares', php: 70, qty: 0.5, per: 'panel', estimate: true },
+    { name: 'DC enclosure IP65', php: 650, qty: 1, per: 'inverter', estimate: true },
+    // AC side
+    { name: 'AC breaker 2P 63 A', php: 375, qty: 1, per: 'inverter', estimate: true },
+    { name: 'AC surge protector Type II 275 V', php: 650, qty: 1, per: 'inverter', estimate: true },
+    { name: 'AC enclosure', php: 500, qty: 1, per: 'inverter', estimate: true },
+    { name: 'House panel breaker 2P 60 A', php: 1150, qty: 1, per: 'inverter', estimate: true },
+    { name: '14 mm² THHN, line + neutral', php: 200, qty: 20, per: 'inverter', unit: 'm', estimate: true },
+    { name: 'Lockable safety switch 2P 60 A', php: 2750, qty: 1, per: 'job', estimate: true },
+    // Earthing
+    { name: 'Ground rod 5/8" × 10 ft + clamp', php: 900, qty: 1, per: 'job', estimate: true },
+    { name: '8 mm² THHN green', php: 110, qty: 30, per: 'job', unit: 'm', estimate: true },
+    { name: 'Earthing clip', php: 20, qty: 1, per: 'panel', estimate: true },
+    // Conduit and small parts
+    { name: 'Conduit, 3 m length', php: 120, qty: 10, per: 'job', estimate: true },
+    { name: 'Conduit fittings and straps', php: 1150, qty: 1, per: 'job', unit: 'lot', estimate: true },
+    { name: 'UV cable ties and clips', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true },
+    { name: 'Lugs and heat shrink', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true },
+    { name: 'Warning labels', php: 350, qty: 1, per: 'job', unit: 'set', estimate: true },
+  ],
+  miscCost: 0,
   targetReduction: 0.95,
   batteryReserve: 0.4,
   outagePercentile: 0.8,
@@ -1630,18 +1701,41 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     notes.push(...hybridBatteryNotes(cfg, battery.sizedBy));
   }
 
-  // Pricing: supplier hardware in USD, converted to PHP; labour and misc are already PHP.
+  // Pricing: supplier hardware in USD, converted to PHP; labour, net metering and misc are already PHP.
   if (!(cfg.usdToPhp > 0)) throw new Error('usdToPhp must be above 0.');
+  if (!(cfg.panelsPerString > 0) || !(cfg.pvCableRollMeters > 0) || !(cfg.panelsPerContainer > 0)) {
+    throw new Error('panelsPerString, pvCableRollMeters and panelsPerContainer must be above 0.');
+  }
+  const strings = Math.ceil(panels / cfg.panelsPerString);
+  const pvCableRolls = Math.ceil((strings * cfg.pvCableMetersPerString) / cfg.pvCableRollMeters);
   const usd = {
     panels: panels * cfg.panelPriceUsd,
     inverters: inverterCount * cfg.inverterPriceUsd,
     batteries: battery.units * cfg.batteryPriceUsd,
+    mounting: panels * cfg.mountingPerPanelUsd,
+    pvCable: pvCableRolls * cfg.pvCableRollUsd,
   };
   const panelCost = usd.panels * cfg.usdToPhp;
   const inverterCost = usd.inverters * cfg.usdToPhp;
   const batteryCost = usd.batteries * cfg.usdToPhp;
-  const mountingCost = cfg.mountingCablingRate * (panelCost + batteryCost + inverterCost);
-  const total = panelCost + inverterCost + batteryCost + mountingCost + cfg.laborCost + cfg.miscCost;
+  const mountingCost = usd.mounting * cfg.usdToPhp;
+  const pvCableCost = usd.pvCable * cfg.usdToPhp;
+  const freightCost = (panels * cfg.freightPerContainer) / cfg.panelsPerContainer;
+  const basisCount: Record<PartBasis, number> = { job: 1, inverter: inverterCount, string: strings, panel: panels };
+  const electricalParts = cfg.electricalParts.map((part) => {
+    const quantity = Math.ceil(part.qty * basisCount[part.per] - 1e-9);
+    return { name: part.name, quantity, unit: part.unit, php: part.php, total: quantity * part.php, estimate: !!part.estimate };
+  });
+  const electricalCost = electricalParts.reduce((sum, part) => sum + part.total, 0);
+  const estimated = electricalParts.filter((part) => part.estimate && part.quantity > 0);
+  if (estimated.length) {
+    warnings.push(
+      `${estimated.length} electrical part${estimated.length === 1 ? ' is' : 's are'} priced from estimates ` +
+      `(${num0(estimated.reduce((sum, part) => sum + part.total, 0))} PHP), not store quotes.`,
+    );
+  }
+  const total = panelCost + inverterCost + batteryCost + mountingCost + pvCableCost + freightCost + electricalCost +
+    cfg.laborCost + cfg.netMeteringCost + cfg.miscCost;
 
   const months = sim.monthly.length;
   const needs = battery.needs;
@@ -1718,12 +1812,25 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     },
     pricing: {
       usdToPhp: cfg.usdToPhp,
-      usd: { panels: round2(usd.panels), inverters: round2(usd.inverters), batteries: round2(usd.batteries) },
+      usd: {
+        panels: round2(usd.panels),
+        inverters: round2(usd.inverters),
+        batteries: round2(usd.batteries),
+        mounting: round2(usd.mounting),
+        pvCable: round2(usd.pvCable),
+      },
       panels: round2(panelCost),
       inverters: round2(inverterCost),
       batteries: round2(batteryCost),
-      mountingCabling: round2(mountingCost),
+      mounting: round2(mountingCost),
+      pvCable: round2(pvCableCost),
+      pvCableRolls,
+      mountingCabling: round2(mountingCost + pvCableCost),
+      freight: round2(freightCost),
+      electrical: round2(electricalCost),
+      electricalParts,
       labor: cfg.laborCost,
+      netMetering: cfg.netMeteringCost,
       misc: cfg.miscCost,
       total: round2(total),
     },

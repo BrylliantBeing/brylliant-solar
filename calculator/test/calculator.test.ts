@@ -273,8 +273,37 @@ test('Quote: USD hardware is converted at usdToPhp and the total adds up', () =>
   assert.equal(p.panels, Math.round(q.panels.count * 82.2 * 60 * 100) / 100);
   assert.equal(p.inverters, q.inverter.count * 720 * 60);
   assert.equal(p.batteries, q.battery.units * 980 * 60);
-  const hardware = (q.panels.count * 82.2 + q.inverter.count * 720 + q.battery.units * 980) * 60;
-  assert.ok(Math.abs(p.total - (hardware * 1.4 + 20625 + 1500)) < 0.01);
+  const rolls = Math.ceil((Math.ceil(q.panels.count / 10) * 40) / 100);
+  assert.equal(p.pvCableRolls, rolls);
+  assert.equal(p.usd.mounting, q.panels.count * 25);
+  assert.equal(p.usd.pvCable, rolls * 90);
+  const hardware = (q.panels.count * (82.2 + 25) + q.inverter.count * 720 + q.battery.units * 980 + rolls * 90) * 60;
+  assert.equal(p.netMetering, 1500);
+  assert.equal(p.misc, 0);
+  assert.ok(Math.abs(p.freight - (q.panels.count * 350000) / 165) < 0.01);
+  assert.ok(Math.abs(p.total - (hardware + p.freight + p.electrical + 20625 + 1500)) < 0.01);
+});
+
+test('Quote: electrical parts scale with strings, inverters and panels', () => {
+  const parts = [
+    { name: 'per job', php: 100, qty: 1, per: 'job' as const },
+    { name: 'per inverter', php: 10, qty: 20, per: 'inverter' as const, unit: 'm' },
+    { name: 'per string', php: 1, qty: 1, per: 'string' as const },
+    { name: 'per panel', php: 1000, qty: 0.5, per: 'panel' as const, estimate: true },
+  ];
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, electricalParts: parts });
+  const [job, inverter, string, panel] = q.pricing.electricalParts;
+  assert.equal(job.quantity, 1);
+  assert.equal(inverter.quantity, 20 * q.inverter.count);
+  assert.equal(string.quantity, Math.ceil(q.panels.count / 10));
+  assert.equal(panel.quantity, Math.ceil(q.panels.count / 2));
+  assert.equal(q.pricing.electrical, job.total + inverter.total + string.total + panel.total);
+  assert.equal(q.warnings.filter((w) => w.includes('priced from estimates')).length, 1);
+});
+
+test('Quote: PV cable is bought in whole rolls, one per 2.5 strings', () => {
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, panelsPerString: 1 });
+  assert.equal(q.pricing.pvCableRolls, Math.ceil((q.panels.count * 40) / 100));
 });
 
 test('Quote: inverters cover the panel count as well as the load', () => {
