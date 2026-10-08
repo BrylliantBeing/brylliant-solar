@@ -117,7 +117,7 @@ export interface QuoteDefaults {
   // Grid-tie comparison: these replace the inverter* settings and maxDcAcRatio
   gridTieInverterKw: number;
   gridTieInverterMaxPanels: number;
-  gridTieInverterPriceUsd: number;
+  gridTieInverterPricePhp: number; // PHP, bought locally rather than priced in USD
   gridTieMaxDcAcRatio: number;
 }
 
@@ -286,11 +286,11 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   electricityRate: 13.4668,
   generationCharge: 8.47,
   usdToPhp: 62.83, // fallback; the app fills in the live rate
-  panelPriceUsd: 82.2, // Jinko JKM720N-66HL5-BDV
-  panelWatts: 720,
+  panelPriceUsd: 91.65, // Jinko JKM725N-66HL5-BDV
+  panelWatts: 725,
   inverterPriceUsd: 720, // Growatt SPE12000ES
   inverterKw: 12,
-  inverterMaxPanels: 20, // 2 strings of 10: 10 × 49.04 V Voc = 490 V, under the 550 V input limit
+  inverterMaxPanels: 20, // 2 strings of 10: 10 × 49.20 V Voc = 492 V, under the 550 V input limit
   inverterChargeKw: 12, // assumed ~250 A at 48 V; confirm against the SPE12000ES datasheet
   batteryPriceUsd: 980,
   batteryUnitKwh: 10,
@@ -299,13 +299,13 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   pvCableRollUsd: 90,
   pvCableRollMeters: 100,
   pvCableMetersPerString: 40, // assumed ~20 m run from array to inverter, red + black; measure on site
-  panelsPerString: 10, // 10 × 49.04 V Voc = 490 V, under the 550 V input limit
+  panelsPerString: 10, // 10 × 49.20 V Voc = 492 V, under the 550 V (hybrid) and 600 V (grid-tie) input limits
   freightPerContainer: 350000, // 20 ft container, forwarder estimate
   panelsPerContainer: 165, // 5 pallets of 33, with rails and hardware
   netMeteringCost: 1500,
   electricalParts: [
-    // Estimates for a grid-tie job, 2 strings of 10 × 720 W into one 10 kW inverter. Ratings from the
-    // JKM720N (Isc 18.67 A, 35 A series fuse) and SUN-10K-G02P1 (50 A max AC) datasheets.
+    // Estimates for a grid-tie job, 2 strings of 10 × 725 W into one 10 kW inverter. Ratings from the
+    // JKM725N (Isc 18.74 A, 35 A series fuse) and HYX-S10K-S2 (45.5 A max AC) datasheets.
     // DC side
     { name: 'DC breaker 2P 32 A 600 V+', php: 425, qty: 1, per: 'string', estimate: true },
     { name: 'DC surge protector Type II 600 V', php: 500, qty: 1, per: 'string', estimate: true },
@@ -343,10 +343,12 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   creditRollover: true,
   maxDcAcRatio: 1.3,
   maxPanels: 300,
-  gridTieInverterKw: 10, // Deye SUN-10K-G02P1-EU-AM2, single phase
-  gridTieInverterMaxPanels: 20, // 2 MPPT × 1 string of 10: 490 V Voc under 550 V, ~17.5 A under 26 A; 14.4 kWp under 15 kW
-  gridTieInverterPriceUsd: 537,
-  gridTieMaxDcAcRatio: 1.5, // Deye allows 15 kW of PV on the 10 kW unit
+  gridTieInverterKw: 10, // HYXiPOWER HYX-S10K-S2, single phase
+  // 3 strings: MPPT1 takes 1 (20 A), MPPT2 takes 2 in parallel (32 A; 37.5 A Isc under 40 A). 492 V Voc under 600 V.
+  // 27 × 725 W = 19.6 kWp, under the 20 kW max PV input; 28 would be over.
+  gridTieInverterMaxPanels: 27,
+  gridTieInverterPricePhp: 34003.2,
+  gridTieMaxDcAcRatio: 2, // HYXI allows 20 kW of PV on the 10 kW unit
 };
 
 const MIN_HOURS = 168;
@@ -1560,7 +1562,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       ...base,
       inverterKw: base.gridTieInverterKw,
       inverterMaxPanels: base.gridTieInverterMaxPanels,
-      inverterPriceUsd: base.gridTieInverterPriceUsd,
+      // Priced in PHP; as USD so the rate converts it back to the same peso price.
+      inverterPriceUsd: base.gridTieInverterPricePhp / base.usdToPhp,
       maxDcAcRatio: base.gridTieMaxDcAcRatio,
     }
     : base;

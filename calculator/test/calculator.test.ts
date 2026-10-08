@@ -267,17 +267,17 @@ test('Quote: USD hardware is converted at usdToPhp and the total adds up', () =>
   const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, usdToPhp: 60 });
   const p = q.pricing;
   assert.equal(p.usdToPhp, 60);
-  assert.equal(p.usd.panels, Math.round(q.panels.count * 82.2 * 100) / 100);
+  assert.equal(p.usd.panels, Math.round(q.panels.count * 91.65 * 100) / 100);
   assert.equal(p.usd.inverters, q.inverter.count * 720);
   assert.equal(p.usd.batteries, q.battery.units * 980);
-  assert.equal(p.panels, Math.round(q.panels.count * 82.2 * 60 * 100) / 100);
+  assert.equal(p.panels, Math.round(q.panels.count * 91.65 * 60 * 100) / 100);
   assert.equal(p.inverters, q.inverter.count * 720 * 60);
   assert.equal(p.batteries, q.battery.units * 980 * 60);
   const rolls = Math.ceil((Math.ceil(q.panels.count / 10) * 40) / 100);
   assert.equal(p.pvCableRolls, rolls);
   assert.equal(p.usd.mounting, q.panels.count * 25);
   assert.equal(p.usd.pvCable, rolls * 90);
-  const hardware = (q.panels.count * (82.2 + 25) + q.inverter.count * 720 + q.battery.units * 980 + rolls * 90) * 60;
+  const hardware = (q.panels.count * (91.65 + 25) + q.inverter.count * 720 + q.battery.units * 980 + rolls * 90) * 60;
   assert.equal(p.netMetering, 1500);
   assert.equal(p.misc, 0);
   assert.ok(Math.abs(p.freight - (q.panels.count * 350000) / 165) < 0.01);
@@ -326,7 +326,7 @@ test('Quote: meets 95%, and one panel fewer would not', () => {
   const ref = refFrom(week());
   const parsed = outageLog.map((o) => ({ start: parseZamboangaDateTime(o.start), end: parseZamboangaDateTime(o.end) }));
   const ctx = buildSimContext(ref, realSun.monthly, parsed, true, realSun.spread);
-  const fewer = simulateYear(ctx, ((q.panels.count - 1) * 720) / 1000, q.battery.installedKwh, q.inverter.totalKw, defaults);
+  const fewer = simulateYear(ctx, ((q.panels.count - 1) * 725) / 1000, q.battery.installedKwh, q.inverter.totalKw, defaults);
   assert.ok(fewer.billAfter > fewer.baseline * 0.05);
   assert.equal(q.bill.monthly.length, 12);
   assert.equal(q.simulation.start, '2025-09-01T00:00:00');
@@ -513,15 +513,15 @@ test('Defaults: inverter and battery losses are on', () => {
 
 // ── Grid-tie comparison ─────────────────────────────────────
 
-test('Grid-tie: no batteries, Deye inverters set by the panel count, same bill target', () => {
+test('Grid-tie: no batteries, HYXI inverters set by the panel count, same bill target', () => {
   const g = calculateQuote({ consumption: heavyEvenings(), outages: outageLog, sunProfile: realSun, systemType: 'grid-tie' });
   assert.equal(g.systemType, 'grid-tie');
   assert.equal(g.battery.units, 0);
   assert.equal(g.pricing.batteries, 0);
   assert.equal(g.inverter.ratingKwEach, 10);
   assert.equal(g.inverter.countForLoad, 0);
-  assert.equal(g.inverter.count, Math.ceil(g.panels.count / 20));
-  assert.equal(g.pricing.usd.inverters, g.inverter.count * 537);
+  assert.equal(g.inverter.count, Math.ceil(g.panels.count / 27));
+  assert.ok(Math.abs(g.pricing.inverters - g.inverter.count * 34003.2) < 0.01); // PHP price, whatever the rate
   assert.ok(g.bill.reductionPercent >= 95);
   assert.equal(g.outageRuntime, null);
   assert.ok(!g.warnings.some((w) => w.includes('No outage data') || w.includes('not fully covered')));
