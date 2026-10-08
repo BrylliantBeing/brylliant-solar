@@ -305,7 +305,7 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   netMeteringCost: 1500,
   electricalParts: [
     // Estimates for a grid-tie job, 2 strings of 10 × 725 W into one 10 kW inverter. Ratings from the
-    // JKM725N (Isc 18.74 A, 35 A series fuse) and HYX-S10K-S2 (45.5 A max AC) datasheets.
+    // JKM725N (Isc 18.74 A, 35 A series fuse) datasheet and HYX-S10K-S manual (45.4 A rated, 60 A max OCPD).
     // DC side
     { name: 'DC breaker 2P 32 A 600 V+', php: 425, qty: 1, per: 'string', estimate: true },
     { name: 'DC surge protector Type II 600 V', php: 500, qty: 1, per: 'string', estimate: true },
@@ -313,7 +313,7 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
     { name: 'MC4 pair, jumper spares', php: 70, qty: 0.5, per: 'panel', estimate: true },
     { name: 'DC enclosure IP65', php: 650, qty: 1, per: 'inverter', estimate: true },
     // AC side
-    { name: 'AC breaker 2P 63 A', php: 375, qty: 1, per: 'inverter', estimate: true },
+    { name: 'AC breaker 2P 60 A', php: 375, qty: 1, per: 'inverter', estimate: true }, // HYX-S10K-S max OCPD is 60 A; one per inverter
     { name: 'AC surge protector Type II 275 V', php: 650, qty: 1, per: 'inverter', estimate: true },
     { name: 'AC enclosure', php: 500, qty: 1, per: 'inverter', estimate: true },
     { name: 'House panel breaker 2P 60 A', php: 1150, qty: 1, per: 'inverter', estimate: true },
@@ -343,12 +343,11 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   creditRollover: true,
   maxDcAcRatio: 1.3,
   maxPanels: 300,
-  gridTieInverterKw: 10, // HYXiPOWER HYX-S10K-S2, single phase
-  // 3 strings: MPPT1 takes 1 (20 A), MPPT2 takes 2 in parallel (32 A; 37.5 A Isc under 40 A). 492 V Voc under 600 V.
-  // 27 × 725 W = 19.6 kWp, under the 20 kW max PV input; 28 would be over.
-  gridTieInverterMaxPanels: 27,
+  gridTieInverterKw: 10, // HYXiPOWER HYX-S10K-S, single phase
+  // 3 MPPT × 1 string, 20 A each (25 A Isc), 600 V max. 22 × 725 W = 15.95 kWp, under the 16 kW max PV input.
+  gridTieInverterMaxPanels: 22,
   gridTieInverterPricePhp: 34003.2,
-  gridTieMaxDcAcRatio: 2, // HYXI allows 20 kW of PV on the 10 kW unit
+  gridTieMaxDcAcRatio: 1.6, // HYX-S10K-S allows 16 kW of PV on the 10 kW unit
 };
 
 const MIN_HOURS = 168;

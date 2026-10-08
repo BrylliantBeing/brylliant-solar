@@ -520,7 +520,7 @@ test('Grid-tie: no batteries, HYXI inverters set by the panel count, same bill t
   assert.equal(g.pricing.batteries, 0);
   assert.equal(g.inverter.ratingKwEach, 10);
   assert.equal(g.inverter.countForLoad, 0);
-  assert.equal(g.inverter.count, Math.ceil(g.panels.count / 27));
+  assert.equal(g.inverter.count, Math.ceil(g.panels.count / 22));
   assert.ok(Math.abs(g.pricing.inverters - g.inverter.count * 34003.2) < 0.01); // PHP price, whatever the rate
   assert.ok(g.bill.reductionPercent >= 95);
   assert.equal(g.outageRuntime, null);
