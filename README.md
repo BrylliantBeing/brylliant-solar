@@ -94,7 +94,7 @@ and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
 
 `book.tsx` posts to `public/api/quote.php`, which emails the request over SMTP
 using the `MAIL_*` variables in the table under "Internal pages". The customer
-picks the days they are free (the next two weeks, Sundays skipped) and, if they
+picks the days they are free on a calendar (2 to 30 days ahead, no Sundays) and, if they
 give an email address, gets an automatic confirmation from the same script —
 don't also turn on Hostinger's mailbox auto-reply, or it will answer the
 website mailbox rather than the customer. If sending

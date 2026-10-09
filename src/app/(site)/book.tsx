@@ -16,6 +16,7 @@ import Animated, {
 import { MotionScrollView, Reveal } from '@/components/motion';
 import { ThemedText } from '@/components/themed-text';
 import { Button, Callout, Card, Chip } from '@/components/ui/kit';
+import { VisitCalendar } from '@/components/visit-calendar';
 import { peso } from '@/constants/solar';
 import { Brand, BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -26,28 +27,26 @@ const TIMES = ['Morning', 'Afternoon', 'Any time'] as const;
 
 /** First visit day is this many days out, leaving a working day to call and confirm. */
 const LEAD_DAYS = 2;
-const DAYS_SHOWN = 14;
+/** Must not exceed MAX_DAYS_AHEAD in public/api/quote.php. */
+const LAST_DAY = 30;
 const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000; // Asia/Manila is UTC+8 all year, no DST
 
-type VisitDay = { iso: string; label: string };
-
-/**
- * Bookable days in Zamboanga time, whatever the device's zone: the next
- * DAYS_SHOWN days from LEAD_DAYS out, Sundays skipped.
- */
-function visitDays(): VisitDay[] {
-  const days: VisitDay[] = [];
-  const manilaNow = new Date(Date.now() + MANILA_OFFSET_MS);
-  for (let i = LEAD_DAYS; i < LEAD_DAYS + DAYS_SHOWN; i++) {
-    const d = new Date(Date.UTC(manilaNow.getUTCFullYear(), manilaNow.getUTCMonth(), manilaNow.getUTCDate() + i));
-    if (d.getUTCDay() === 0) continue;
-    days.push({
-      iso: d.toISOString().slice(0, 10),
-      label: d.toLocaleDateString('en-PH', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }),
-    });
-  }
-  return days;
+/** A YYYY-MM-DD this many days from today in Zamboanga, whatever the device's zone. */
+function manilaDay(offset: number): string {
+  const now = new Date(Date.now() + MANILA_OFFSET_MS);
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + offset))
+    .toISOString()
+    .slice(0, 10);
 }
+
+/** "Mon, Oct 12" */
+const dayLabel = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-PH', {
+    timeZone: 'UTC',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
 
 /**
  * PHP endpoint that mails the lead to the Hostinger inbox. Relative on web so a
@@ -82,7 +81,7 @@ export default function BookScreen() {
   const [bill, setBill] = useState('');
   const [property, setProperty] = useState<string>(PROPERTY[0]);
   const [email, setEmail] = useState('');
-  const [days] = useState(visitDays);
+  const [range] = useState(() => ({ first: manilaDay(LEAD_DAYS), last: manilaDay(LAST_DAY) }));
   const [dates, setDates] = useState<string[]>([]);
   const [time, setTime] = useState<string>(TIMES[2]);
   const [confirmed, setConfirmed] = useState(false);
@@ -131,7 +130,7 @@ export default function BookScreen() {
         `Property:  ${property}`,
         `Address:   ${address.trim()}`,
         `Bill:      ${Number.isFinite(billNum) ? `${peso(billNum)} / month` : 'not given'}`,
-        `Free on:   ${days.filter((d) => dates.includes(d.iso)).map((d) => d.label).join(', ')}`,
+        `Free on:   ${[...dates].sort().map(dayLabel).join(', ')}`,
         `Time:      ${time}`,
       ].join('\n')
     );
@@ -308,20 +307,21 @@ export default function BookScreen() {
                     Days you are free for the visit
                   </ThemedText>
                   <ThemedText type="small" themeColor="textMuted">
-                    Pick every day that works. We will call to confirm one of them.
+                    Tap every day that works — we will call to confirm one of them. No visits on Sundays.
                   </ThemedText>
-                  <View style={styles.chipRow}>
-                    {days.map((d) => (
-                      <Chip
-                        key={d.iso}
-                        label={d.label}
-                        selected={dates.includes(d.iso)}
-                        onPress={() =>
-                          setDates((cur) => (cur.includes(d.iso) ? cur.filter((x) => x !== d.iso) : [...cur, d.iso]))
-                        }
-                      />
-                    ))}
-                  </View>
+                  <VisitCalendar
+                    first={range.first}
+                    last={range.last}
+                    selected={dates}
+                    onToggle={(iso) =>
+                      setDates((cur) => (cur.includes(iso) ? cur.filter((x) => x !== iso) : [...cur, iso]))
+                    }
+                  />
+                  {dates.length ? (
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {dates.length === 1 ? '1 day' : `${dates.length} days`}: {[...dates].sort().map(dayLabel).join(', ')}
+                    </ThemedText>
+                  ) : null}
                 </View>
 
                 <View style={{ gap: Spacing.two }}>
