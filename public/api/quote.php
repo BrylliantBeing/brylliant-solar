@@ -314,7 +314,7 @@ if ($email !== '') {
         '',
         'Need to change something? Just reply to this email.',
         '',
-        'Salamat,',
+        'Gracias,',
         'Brylliant Solar',
         'Zamboanga City',
         '',

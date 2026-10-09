@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Platform, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -9,29 +9,30 @@ import { Collapsible } from '@/components/ui/collapsible';
 import { BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import {
   COMMERCIAL_LABELS,
-  Model,
   RESIDENTIAL_LABELS,
   type PeakBaseRatio,
   type ResidentialProfile,
   type Segment,
-  estimate,
   kwh,
   kwhFromBill,
   peso,
-  pesoRange,
   segmentFor,
-  yearsRange,
 } from '@/constants/solar';
 import { useTheme } from '@/hooks/use-theme';
+import { EstimateDefaults, estimateQuote, publicPrice } from '@/lib/estimate-quote';
+import { fetchUsdToPhp } from '@/lib/exchange-rate';
+import { num, runtimeText } from '@/lib/quote-input';
 
 const QUICK_BILLS: Record<Segment, number[]> = {
   residential: [2400, 3600, 6000, 12000],
   commercial: [25000, 45000, 90000, 180000],
 };
 
-const TARGETS = [50, 60, 70, 80, 90];
+const TARGETS = [50, 60, 70, 80, 90, 100];
 const RESIDENTIAL_KEYS: ResidentialProfile[] = ['typical', 'away', 'home', 'aircon'];
 const RATIO_KEYS: PeakBaseRatio[] = [10, 15, 20, 30];
+
+type System = 'grid-tie' | 'hybrid';
 
 export default function EstimateScreen() {
   const t = useTheme();
@@ -42,39 +43,53 @@ export default function EstimateScreen() {
   const [profile, setProfile] = useState<ResidentialProfile>('typical');
   const [ratio, setRatio] = useState<PeakBaseRatio>(20);
   const [targetPct, setTargetPct] = useState(80);
+  const [system, setSystem] = useState<System>('grid-tie');
 
   // assumptions, held as strings so the fields stay editable mid-keystroke
-  const [gridRate, setGridRate] = useState(String(Model.gridRate));
-  const [yieldPerKwp, setYield] = useState(String(Model.yieldPerKwp));
-  const [exportRatio, setExportRatio] = useState(String(Model.exportRatio));
-  const [openDays, setOpenDays] = useState(String(Model.openDaysPerWeek));
-  const [fixedCharge, setFixed] = useState(String(Model.fixedCharge));
+  const [importRate, setImportRate] = useState(String(EstimateDefaults.importRate));
+  const [exportCredit, setExportCredit] = useState(String(EstimateDefaults.exportCredit));
+  const [openDays, setOpenDays] = useState(String(EstimateDefaults.openDaysPerWeek));
 
-  const num = (v: string, fallback: number) => {
+  // Hardware is priced in US$, as in the internal calculator; its fallback rate stands until this lands.
+  const [usdToPhp, setUsdToPhp] = useState<number | undefined>();
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchUsdToPhp(ctrl.signal)
+      .then((r) => setUsdToPhp(r.rate))
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, []);
+
+  const num0 = (v: string, fallback: number) => {
     const n = parseFloat(v);
-    return Number.isFinite(n) ? n : fallback;
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
   };
 
-  const rate = num(gridRate, Model.gridRate);
-  const fixed = num(fixedCharge, Model.fixedCharge);
-  const monthlyKwh = kwhFromBill(num(bill, 0), rate, fixed);
+  const rate = num0(importRate, EstimateDefaults.importRate);
+  const credit = num0(exportCredit, EstimateDefaults.exportCredit);
+  const days = num0(openDays, EstimateDefaults.openDaysPerWeek);
+  const monthlyKwh = kwhFromBill(num0(bill, 0), rate, 0);
+  const empty = monthlyKwh <= 0;
 
-  const result = useMemo(
-    () =>
-      estimate({
+  const outcome = useMemo(() => {
+    if (empty) return null;
+    try {
+      const hybrid = estimateQuote({
         segment,
         profile,
         peakBaseRatio: ratio,
         monthlyKwh,
         targetPct,
-        yieldPerKwp: num(yieldPerKwp, Model.yieldPerKwp),
-        exportRatio: num(exportRatio, Model.exportRatio),
-        gridRate: rate,
-        fixedCharge: fixed,
-        openDaysPerWeek: num(openDays, Model.openDaysPerWeek),
-      }),
-    [segment, profile, ratio, monthlyKwh, targetPct, yieldPerKwp, exportRatio, rate, fixed, openDays]
-  );
+        importRate: rate,
+        exportCredit: credit,
+        openDaysPerWeek: days,
+        usdToPhp,
+      });
+      return { hybrid, gridTie: hybrid.gridTie ?? null, error: null };
+    } catch (e) {
+      return { hybrid: null, gridTie: null, error: (e as Error).message };
+    }
+  }, [empty, segment, profile, ratio, monthlyKwh, targetPct, rate, credit, days, usdToPhp]);
 
   function chooseSegment(next: Segment) {
     setSegment(next);
@@ -82,11 +97,15 @@ export default function EstimateScreen() {
   }
 
   const suggested = segmentFor(monthlyKwh);
-  const empty = monthlyKwh <= 0;
   const shapeNote =
     segment === 'residential'
       ? RESIDENTIAL_LABELS[profile].blurb
       : COMMERCIAL_LABELS[ratio].blurb;
+
+  const q = outcome ? (system === 'hybrid' ? outcome.hybrid : outcome.gridTie) : null;
+  const other = outcome ? (system === 'hybrid' ? outcome.gridTie : outcome.hybrid) : null;
+  const pb = q ? publicPrice(q) : null;
+  const monthly = (annual: number) => annual / 12;
 
   return (
     <MotionScrollView
@@ -100,15 +119,15 @@ export default function EstimateScreen() {
       <View style={styles.inner}>
         <Reveal>
           <ThemedText type="eyebrow" themeColor="textMuted">
-            Estimate · grid-tie
+            Estimate · grid-tie or battery backup
           </ThemedText>
           <ThemedText type="title" style={{ marginTop: Spacing.two }}>
             What would solar do to your bill?
           </ThemedText>
           <ThemedText type="lede" themeColor="textSecondary" style={{ marginTop: Spacing.two }}>
-            Two models sit behind this: household load shapes for homes, and a measured
-            office-and-retail shape for businesses. Both run a five-minute simulation of a whole
-            month against your roof. Every assumption is shown below and you can change any of them.
+            This runs the same calculator we quote with. It turns your bill into a week of hourly
+            use, then simulates a whole year hour by hour against sun measured on a Zamboanga
+            roof, and prices the parts we would actually install.
           </ThemedText>
         </Reveal>
 
@@ -160,7 +179,7 @@ export default function EstimateScreen() {
                 <Chip
                   key={b}
                   label={peso(b)}
-                  selected={num(bill, 0) === b}
+                  selected={num0(bill, 0) === b}
                   onPress={() => setBill(String(b))}
                 />
               ))}
@@ -237,85 +256,124 @@ export default function EstimateScreen() {
         {empty ? (
           <Reveal>
             <Card style={{ marginTop: Spacing.three }}>
-              <ThemedText type="heading">That bill is already at the connection charge</ThemedText>
+              <ThemedText type="heading">Put in a monthly bill</ThemedText>
               <ThemedText type="small" themeColor="textSecondary">
                 Put in what you actually pay in an average month and we will size against it.
               </ThemedText>
             </Card>
           </Reveal>
+        ) : !q || !pb ? (
+          <Reveal>
+            <Card style={{ marginTop: Spacing.three }}>
+              <ThemedText type="heading">We couldn’t size this one</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {outcome?.error ?? 'No system meets this target.'} Try a lower target, or book a
+                survey and we will size it by hand.
+              </ThemedText>
+            </Card>
+          </Reveal>
         ) : (
           <Reveal delay={160}>
+            <View style={[styles.chipRow, { marginTop: Spacing.three }]}>
+              <Chip
+                label="Grid-tie"
+                selected={system === 'grid-tie'}
+                onPress={() => setSystem('grid-tie')}
+              />
+              <Chip
+                label="With battery backup"
+                selected={system === 'hybrid'}
+                onPress={() => setSystem('hybrid')}
+              />
+            </View>
+
             <View style={styles.statGrid}>
               <Stat
                 hero
                 label="Estimated new bill"
-                value={peso(result.billAfter)}
-                sub={
-                  result.atFloor
-                    ? `Down to the connection charge — saving ${peso(result.monthlySaving)}/mo`
-                    : `Down from ${peso(result.billBefore)} — saving ${peso(result.monthlySaving)} a month`
-                }
+                value={peso(q.bill.averageMonthlyAfter)}
+                sub={`Down from ${peso(q.bill.averageMonthlyBefore)} — saving ${peso(pb.annualSaving / 12)} a month`}
               />
               <Stat
                 label="System"
-                value={`${result.installedKwp.toFixed(2)} kWp`}
-                sub={`${result.panels} × ${Model.panelWatts} Wp · ${result.inverterKw.toFixed(1)} kW inverter`}
+                value={`${num(q.panels.systemKw, 2)} kWp`}
+                sub={
+                  `${q.panels.count} × ${q.panels.wattsEach} W · ${q.inverter.count} × ${q.inverter.ratingKwEach} kW inverter` +
+                  (q.battery.units > 0 ? ` · ${num(q.battery.installedKwh, 0)} kWh battery` : '')
+                }
               />
               <Stat
                 label="Bill removed"
-                value={`${Math.round(result.reductionPct)}%`}
-                sub={`Sized for ${targetPct}%; whole panels overshoot`}
+                value={`${Math.round(q.bill.reductionPercent)}%`}
+                sub={targetPct < 100 ? `Sized for ${targetPct}%; whole panels overshoot` : 'Export credit covers every peso imported'}
               />
               <Stat
-                label="Used on site"
-                value={`${Math.round(result.selfSharePct)}%`}
-                sub={`${kwh(result.selfKwh)} used as generated, ${kwh(result.exportKwh)} exported`}
+                label="In a brownout"
+                value={
+                  q.outageRuntime
+                    ? runtimeText(q.outageRuntime.afterSunset.medianHours, q.outageRuntime.maxHours)
+                    : 'No power'
+                }
+                sub={
+                  q.outageRuntime
+                    ? 'Typical runtime for an outage starting after sunset'
+                    : 'Grid-tie inverters shut down with the grid, even in full sun'
+                }
               />
               <Stat
-                label="Installed cost"
-                value={pesoRange(result.costLow, result.costHigh)}
-                sub="Range is the balance-of-system band, not a quotation"
+                label="Installed price"
+                value={peso(pb.price)}
+                sub="Supplied and installed; confirmed after a survey"
               />
               <Stat
-                label="Rough payback"
-                value={yearsRange(result.paybackLow, result.paybackHigh)}
-                sub="Before degradation, maintenance and financing"
+                label="Simple payback"
+                value={pb.years === null ? '—' : pb.years > 25 ? '25+ yrs' : `${num(pb.years, 1)} yrs`}
+                sub={`Saving ${peso(pb.annualSaving)} a year`}
               />
             </View>
 
             <Card style={{ marginTop: Spacing.three }}>
               <ThemedText type="eyebrow" themeColor="textMuted">
-                The month, kilowatt-hour by kilowatt-hour
+                An average month, kilowatt-hour by kilowatt-hour
               </ThemedText>
               <View style={{ marginTop: Spacing.two, gap: Spacing.one }}>
-                <Line label="You use" value={kwh(result.monthlyKwh)} />
-                <Line label="Your roof generates" value={kwh(result.generation)} />
-                <Line label="Used as it is generated" value={kwh(result.selfKwh)} />
-                <Line label="Exported to the grid" value={kwh(result.exportKwh)} />
-                <Line label="Still imported" value={kwh(result.importKwh)} />
+                <Line label="You use" value={kwh(monthly(q.energy.annualConsumptionKwh))} />
+                <Line label="Your roof generates" value={kwh(monthly(q.energy.annualSolarKwh))} />
+                <Line label="Exported to the grid" value={kwh(monthly(q.energy.annualExportKwh))} />
+                <Line label="Still imported" value={kwh(monthly(q.energy.annualImportKwh))} />
                 <Line
-                  label={`Net billed, after ${num(exportRatio, Model.exportRatio)}:1 export credit`}
-                  value={kwh(result.billedKwh)}
+                  label={`Bill after ${peso(credit)}/kWh export credit`}
+                  value={peso(q.bill.averageMonthlyAfter)}
                   strong
                 />
               </View>
-              <ThemedText type="small" themeColor="textMuted" style={{ marginTop: Spacing.two }}>
-                {segment === 'residential'
-                  ? `Peak household draw about ${result.peakKw.toFixed(2)} kW, in the evening after the sun has gone.`
-                  : `Base load about ${result.baseKw.toFixed(2)} kW around the clock, peaking near ${result.peakKw.toFixed(1)} kW at 15:00.`}
-              </ThemedText>
+
               <Button label="Book the free survey" href="/book" tone="sun" full />
             </Card>
 
+            {other ? (
+              <Reveal delay={90}>
+                <Callout
+                  title={system === 'hybrid' ? 'Without batteries' : 'With battery backup'}>
+                  {system === 'hybrid'
+                    ? `A grid-tie system for the same target costs ${peso(publicPrice(other).price)} and leaves a ${peso(other.bill.averageMonthlyAfter)} bill, but gives no power in a brownout.`
+                    : `Adding batteries takes the price to ${peso(publicPrice(other).price)}` +
+                      (other.outageRuntime
+                        ? ` and keeps the house running about ${runtimeText(other.outageRuntime.afterSunset.medianHours, other.outageRuntime.maxHours)} into an evening brownout.`
+                        : '.')}
+                </Callout>
+              </Reveal>
+            ) : null}
+
             <Reveal delay={90}>
-              <Callout title="Why the export ratio is the number that hurts">
-                Power you use the moment it is generated offsets your bill one for one. Surplus you
-                push to the grid is credited at {num(exportRatio, Model.exportRatio)} kWh exported
-                per 1 kWh credited. This system uses{' '}
-                {Math.round(result.selfSharePct)}% of its own output on site
+              <Callout title="Why exporting is worth less than using">
+                Power you use the moment it is generated saves the full {peso(rate)}/kWh. Surplus
+                you push to the grid is credited at {peso(credit)}/kWh, and unused credit rolls
+                over to the next month. This system exports about{' '}
+                {kwh(monthly(q.energy.annualExportKwh))} a month
                 {segment === 'commercial'
-                  ? ' — which is why commercial roofs pay back faster than houses.'
-                  : ', so a good share of it takes that haircut.'}
+                  ? ' — commercial demand lines up with the sun, which is why it pays back faster than a house.'
+                  : ', so a good share of its output takes that discount.'}
               </Callout>
             </Reveal>
           </Reveal>
@@ -325,43 +383,40 @@ export default function EstimateScreen() {
         <Reveal style={{ marginTop: Spacing.four }}>
           <Collapsible title="Assumptions — change any of these">
             <View style={styles.fieldGrid}>
-              <Field label="Grid rate ₱/kWh" value={gridRate} onChange={setGridRate} />
-              <Field label="Yield kWh/kWp/day" value={yieldPerKwp} onChange={setYield} />
-              <Field label="Export ratio (kWh per credit)" value={exportRatio} onChange={setExportRatio} />
-              <Field label="Fixed charge ₱/mo" value={fixedCharge} onChange={setFixed} />
+              <Field label="Import rate ₱/kWh" value={importRate} onChange={setImportRate} />
+              <Field label="Export credit ₱/kWh" value={exportCredit} onChange={setExportCredit} />
               {segment === 'commercial' ? (
                 <Field label="Open days per week" value={openDays} onChange={setOpenDays} />
               ) : null}
             </View>
             <ThemedText type="small" themeColor="textMuted" style={{ marginTop: Spacing.three }}>
-              Yield is the dominant input — everything scales inversely with it, and a wrong figure
-              moves the quote by about a third. {Model.yieldPerKwp} kWh/kWp/day is measured on one
-              Zamboanga array; your roof will differ. Set the export ratio to 1 if you have full
-              retail net metering, in which case the load shape stops mattering entirely.
+              Everything else is what we quote with: 725 W panels, 12 kW hybrid or 10 kW grid-tie
+              inverters, and 10 kWh battery units.
             </ThemedText>
           </Collapsible>
         </Reveal>
 
         <Reveal delay={90}>
           <Callout title="What this figure is and isn’t">
-            An average-day model: no cloudy days, no seasonal variation, and the load shape assumed
-            to repeat. The household shapes are constructed archetypes, not metered data — no public
-            dataset of hourly Philippine household consumption exists. Annual figures are one month
-            multiplied by twelve. Fine for deciding whether to proceed; not a design document.
+            Your bill is turned into one week of hourly use from the load shape you picked, and
+            that week is repeated across the year, so seasonal changes in load are not captured.
+            The household shapes are constructed archetypes, not metered data. Brownouts in your
+            barangay are not included here. Fine for deciding whether to proceed; at the survey we
+            replace the assumed week with your real meter readings.
           </Callout>
         </Reveal>
 
         <View style={{ marginTop: Spacing.four, gap: Spacing.two }}>
           <Reveal>
             <Bullet>
-              Panels priced on a real supplier quote — Jinko 720 Wp at USD 0.115/W, ₱62 to the
-              dollar, plus 12% VAT.
+              The sun comes from months of output logged on a Zamboanga array, not a textbook
+              yield figure.
             </Bullet>
           </Reveal>
           <Reveal delay={70}>
             <Bullet>
-              At that price panels are only 13–18% of the job. The balance-of-system rate is what
-              decides your quotation, and it is the number we replace after a survey.
+              Batteries are sized to carry the house for at least three hours after sunset, keeping
+              40% in reserve in normal use.
             </Bullet>
           </Reveal>
           <Reveal delay={140}>
