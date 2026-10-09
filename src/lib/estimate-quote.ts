@@ -84,22 +84,13 @@ export function estimateQuote(input: EstimateInput): QuoteResult {
   });
 }
 
-/** Shortest payback the public price may show, in years. */
-const MIN_PAYBACK_YEARS = { 'grid-tie': 2.5, hybrid: 3 } as const;
+/** The price shown to the public is the calculator's total times this. */
+const PUBLIC_MARKUP = 1.3;
 
-/** The shown price never exceeds the calculator's total by more than this factor. */
-const MAX_MARKUP = 1.5;
-
-/**
- * The price shown to the public: the calculator's total, raised where needed
- * so simple payback is not shorter than MIN_PAYBACK_YEARS, but never above
- * MAX_MARKUP times the total. Where the cap binds, payback comes out shorter
- * than the minimum.
- */
+/** The price shown to the public, with the annual saving and simple payback at that price. */
 export function publicPrice(q: QuoteResult): { price: number; annualSaving: number; years: number | null } {
   const annualSaving = q.bill.annualBefore - q.bill.annualAfter;
-  const floor = annualSaving * MIN_PAYBACK_YEARS[q.systemType ?? 'hybrid'];
-  const price = Math.min(Math.max(q.pricing.total, floor), q.pricing.total * MAX_MARKUP);
+  const price = q.pricing.total * PUBLIC_MARKUP;
   return { price, annualSaving, years: annualSaving > 0 ? price / annualSaving : null };
 }
 

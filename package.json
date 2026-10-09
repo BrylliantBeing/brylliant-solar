@@ -48,5 +48,10 @@
     "dev:api": "sh scripts/dev-api.sh",
     "dev:proxy": "node scripts/dev-proxy.js"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "expo-router": "~57.0.17",
+    "expo-constants": "~57.0.16",
+    "expo-linking": "~57.0.8"
+  }
 }
