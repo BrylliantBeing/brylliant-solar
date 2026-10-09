@@ -5,7 +5,7 @@
  *
  * Upload the real file to, one level ABOVE your document root:
  *
- *     /home/u327442596/domains/solar.brylletan.com/private/mail-config.php
+ *     /home/u327442596/domains/brylliant.solar/private/mail-config.php
  *
  * That location is deliberate:
  *   - it is outside public_html, so the file can never be fetched over HTTP;
@@ -24,9 +24,9 @@ return [
     'port' => 465,
 
     // Full email address, used both to authenticate and as the From: address.
-    'user' => 'website@solar.brylletan.com',
+    'user' => 'website@brylliant.solar',
     'pass' => 'the-mailbox-password',
 
     // Where the leads land. Can be the same mailbox, or your day-to-day inbox.
-    'to'   => 'hello@solar.brylletan.com',
+    'to'   => 'survey@brylliant.solar',
 ];

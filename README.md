@@ -93,7 +93,11 @@ and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
 ## Booking form
 
 `book.tsx` posts to `public/api/quote.php`, which emails the request over SMTP
-using the `MAIL_*` variables in the table under "Internal pages". If sending
+using the `MAIL_*` variables in the table under "Internal pages". The customer
+picks the days they are free (the next two weeks, Sundays skipped) and, if they
+give an email address, gets an automatic confirmation from the same script —
+don't also turn on Hostinger's mailbox auto-reply, or it will answer the
+website mailbox rather than the customer. If sending
 fails, the customer still sees a summary to send on Messenger. To try it locally,
 add `MAIL_*` lines to `.env.dev.local` and run `npm run dev:api`, `npm run dev:proxy`
 and `npm run web`, then open http://localhost:3000/book.
@@ -113,9 +117,9 @@ Environment variables), never in git:
 | `DB_USER` | the MySQL user |
 | `DB_PASSWORD` | the MySQL user's password |
 | `DB_HOST` | optional, defaults to `localhost` |
-| `MAIL_USER` | booking form: the Hostinger mailbox it sends from, e.g. `website@solar.brylletan.com` |
+| `MAIL_USER` | booking form: the Hostinger mailbox it sends from, e.g. `website@brylliant.solar` |
 | `MAIL_PASSWORD` | that mailbox's password (not your hPanel login) |
-| `MAIL_TO` | optional, where survey requests land; defaults to `MAIL_USER` |
+| `MAIL_TO` | optional, where survey requests land (e.g. `survey@brylliant.solar`); defaults to `MAIL_USER`. Customer confirmations use it as Reply-To |
 | `MAIL_HOST`, `MAIL_PORT` | optional, default `smtp.hostinger.com` and `465` |
 
 Hostinger gives these to the build, not to PHP, so `npm run build:web` ends with

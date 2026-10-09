@@ -5,7 +5,7 @@ declare(strict_types=1);
  * Brylliant Solar — survey request endpoint.
  *
  * Lives in public/api/ so that `expo export` copies it verbatim into dist/ and the
- * Hostinger build deploys it to https://solar.brylletan.com/api/quote.php.
+ * Hostinger build deploys it to https://brylliant.solar/api/quote.php.
  *
  * Mail credentials are NOT in this file and are not in git. They are hPanel
  * environment variables, written to api/lib/env.php at build time by
@@ -13,6 +13,9 @@ declare(strict_types=1);
  */
 
 const MAX_PER_HOUR = 6;
+const MAX_DAYS_AHEAD = 30;
+/** Must match TIMES in src/app/(site)/book.tsx. */
+const TIMES = ['Morning', 'Afternoon', 'Any time'];
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
@@ -66,7 +69,7 @@ function fail(int $status, string $message): void {
 }
 
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-$allowed = ['https://solar.brylletan.com', 'http://localhost:8081', 'http://localhost:19006'];
+$allowed = ['https://brylliant.solar', 'https://www.brylliant.solar', 'http://localhost:8081', 'http://localhost:19006'];
 if ($origin !== '' && in_array($origin, $allowed, true)) {
     header('Access-Control-Allow-Origin: ' . $origin);
     header('Vary: Origin');
@@ -112,7 +115,8 @@ $phone   = field($in, 'phone', 40);
 $address = field($in, 'address', 300);
 $bill    = field($in, 'bill', 40);
 $type    = field($in, 'property', 40);
-$when    = field($in, 'when', 40);
+$time    = field($in, 'time', 40);
+$email   = field($in, 'email', 200);
 
 if ($name === '' || $phone === '' || $address === '') {
     fail(422, 'Name, mobile number and address are all required.');
@@ -120,6 +124,31 @@ if ($name === '' || $phone === '' || $address === '') {
 if (strlen((string) preg_replace('/\D/', '', $phone)) < 10) {
     fail(422, 'That mobile number looks too short.');
 }
+if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+    fail(422, 'That email address does not look right.');
+}
+if (!in_array($time, TIMES, true)) {
+    $time = 'Any time';
+}
+
+/**
+ * Days the customer is free, as YYYY-MM-DD. Only real dates from today to
+ * MAX_DAYS_AHEAD (Manila time) are kept, so nothing free-form reaches an email.
+ */
+$dates = [];
+$today = new DateTimeImmutable('today', new DateTimeZone('Asia/Manila'));
+$latest = $today->modify('+' . MAX_DAYS_AHEAD . ' days');
+foreach (array_slice(is_array($in['dates'] ?? null) ? $in['dates'] : [], 0, 14) as $d) {
+    $day = is_string($d) ? DateTimeImmutable::createFromFormat('!Y-m-d', $d, new DateTimeZone('Asia/Manila')) : false;
+    if ($day && $day->format('Y-m-d') === $d && $day >= $today && $day <= $latest) {
+        $dates[$d] = $day->format('D j M Y');
+    }
+}
+ksort($dates);
+if (!$dates) {
+    fail(422, 'Please pick at least one day you are free for the visit.');
+}
+$datesText = implode(', ', $dates);
 
 /* -------------------------------------------------------------- rate limit */
 
@@ -163,12 +192,15 @@ function smtp_cmd($fp, string $line, int $expect): void {
     }
 }
 
-function smtp_send(array $cfg, string $subject, string $body): void {
+/**
+ * Sends one plain-text message from the configured mailbox. $to and $replyTo
+ * must already be validated addresses: they go straight into SMTP and headers.
+ */
+function smtp_send(array $cfg, string $to, string $fromName, string $subject, string $body, string $replyTo = ''): void {
     $host = (string) ($cfg['host'] ?? 'smtp.hostinger.com');
     $port = (int) ($cfg['port'] ?? 465);
     $user = (string) $cfg['user'];
     $pass = (string) $cfg['pass'];
-    $to   = (string) ($cfg['to'] ?? $user);
 
     $ctx = stream_context_create(['ssl' => ['verify_peer' => true, 'verify_peer_name' => true]]);
     $fp  = @stream_socket_client(
@@ -188,7 +220,7 @@ function smtp_send(array $cfg, string $subject, string $body): void {
         if ((int) substr(smtp_read($fp), 0, 3) !== 220) {
             throw new RuntimeException('SMTP greeting refused');
         }
-        smtp_cmd($fp, 'EHLO ' . ($_SERVER['HTTP_HOST'] ?? 'solar.brylletan.com'), 250);
+        smtp_cmd($fp, 'EHLO ' . ($_SERVER['HTTP_HOST'] ?? 'brylliant.solar'), 250);
         smtp_cmd($fp, 'AUTH LOGIN', 334);
         smtp_cmd($fp, base64_encode($user), 334);
         smtp_cmd($fp, base64_encode($pass), 235);
@@ -203,15 +235,18 @@ function smtp_send(array $cfg, string $subject, string $body): void {
         }
 
         $headers = [
-            'From: Brylliant Solar website <' . $user . '>',
+            'From: ' . $fromName . ' <' . $user . '>',
             'To: <' . $to . '>',
             'Subject: =?UTF-8?B?' . base64_encode($subject) . '?=',
             'Date: ' . date(DATE_RFC2822),
-            'Message-ID: <' . bin2hex(random_bytes(12)) . '@solar.brylletan.com>',
+            'Message-ID: <' . bin2hex(random_bytes(12)) . '@brylliant.solar>',
             'MIME-Version: 1.0',
             'Content-Type: text/plain; charset=UTF-8',
             'Content-Transfer-Encoding: 8bit',
         ];
+        if ($replyTo !== '') {
+            $headers[] = 'Reply-To: <' . $replyTo . '>';
+        }
 
         fwrite($fp, implode("\r\n", $headers) . "\r\n\r\n" . $data . ".\r\n");
         if ((int) substr(smtp_read($fp), 0, 3) !== 250) {
@@ -229,21 +264,70 @@ $body = implode("\n", [
     '',
     'Name:      ' . $name,
     'Mobile:    ' . $phone,
+    'Email:     ' . ($email !== '' ? $email : 'not given'),
     'Property:  ' . ($type !== '' ? $type : 'not given'),
     'Address:   ' . $address,
     'Bill:      ' . ($bill !== '' ? '₱' . $bill . ' / month' : 'not given'),
-    'Best time: ' . ($when !== '' ? $when : 'not given'),
+    'Free on:   ' . $datesText,
+    'Time:      ' . $time,
     '',
     '--',
-    'Sent from the booking form at solar.brylletan.com',
+    'Sent from the booking form at brylliant.solar',
     'Received ' . date('D, d M Y H:i') . ' server time, from ' . $ip,
 ]);
 
 try {
-    smtp_send(load_config(), $subject, $body);
+    $cfg = load_config();
+    smtp_send($cfg, (string) ($cfg['to'] ?? $cfg['user']), 'Brylliant Solar website', $subject, $body, $email);
 } catch (Throwable $e) {
     error_log('[quote.php] ' . $e->getMessage());
     fail(502, 'We could not send that just now. Please message or call us instead.');
 }
 
-echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
+/*
+ * Confirmation to the customer. Anyone can type any address into the form, so
+ * this carries only our own wording plus the validated dates, time and digits
+ * of the phone number — never the name or address — and cannot be used to send
+ * someone else arbitrary text. The request is already in our inbox, so a
+ * failure here is logged and reported, not fatal.
+ */
+$confirmed = false;
+if ($email !== '') {
+    $digits = (string) preg_replace('/[^\d+ ]/', '', $phone);
+    $confirmation = implode("\n", [
+        'Hi,',
+        '',
+        'Thank you for booking a free site survey with Brylliant Solar. We have received your request.',
+        '',
+        'Days you are free:  ' . $datesText,
+        'Time of day:        ' . $time,
+        '',
+        'We will call you on ' . $digits . ' within one working day to confirm the date and time.',
+        '',
+        'The survey is free, takes about an hour and comes with no obligation. We measure your roof,',
+        'check the shading and your electrical panel, and within a week you get a written quotation —',
+        'or an honest explanation of why your roof is not a good fit.',
+        '',
+        'Please have these ready for the visit if you can:',
+        '- Your last 12 electricity bills',
+        '- Any roof or building plans',
+        '',
+        'Need to change something? Just reply to this email.',
+        '',
+        'Salamat,',
+        'Brylliant Solar',
+        'Zamboanga City',
+        '',
+        '--',
+        'You received this because this address was entered on the booking form at brylliant.solar.',
+        'If that was not you, you can ignore this email.',
+    ]);
+    try {
+        smtp_send($cfg, $email, 'Brylliant Solar', 'Your survey request — Brylliant Solar', $confirmation, (string) ($cfg['to'] ?? ''));
+        $confirmed = true;
+    } catch (Throwable $e) {
+        error_log('[quote.php] confirmation: ' . $e->getMessage());
+    }
+}
+
+echo json_encode(['ok' => true, 'confirmed' => $confirmed], JSON_UNESCAPED_UNICODE);

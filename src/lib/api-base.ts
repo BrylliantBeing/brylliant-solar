@@ -7,6 +7,6 @@ import { Platform } from 'react-native';
  */
 const NATIVE_BASE = __DEV__
   ? (process.env.EXPO_PUBLIC_API_BASE ?? 'http://localhost:3000')
-  : 'https://solar.brylletan.com';
+  : 'https://brylliant.solar';
 
 export const apiUrl = (path: string) => (Platform.OS === 'web' ? path : NATIVE_BASE + path);

@@ -21,7 +21,33 @@ import { Brand, BottomTabInset, MaxContentWidth, Radius, Spacing } from '@/const
 import { useTheme } from '@/hooks/use-theme';
 
 const PROPERTY = ['Home', 'Business', 'Dealer enquiry'] as const;
-const WHEN = ['Weekday morning', 'Weekday afternoon', 'Saturday', 'Any time'] as const;
+/** Must match TIMES in public/api/quote.php. */
+const TIMES = ['Morning', 'Afternoon', 'Any time'] as const;
+
+/** First visit day is this many days out, leaving a working day to call and confirm. */
+const LEAD_DAYS = 2;
+const DAYS_SHOWN = 14;
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000; // Asia/Manila is UTC+8 all year, no DST
+
+type VisitDay = { iso: string; label: string };
+
+/**
+ * Bookable days in Zamboanga time, whatever the device's zone: the next
+ * DAYS_SHOWN days from LEAD_DAYS out, Sundays skipped.
+ */
+function visitDays(): VisitDay[] {
+  const days: VisitDay[] = [];
+  const manilaNow = new Date(Date.now() + MANILA_OFFSET_MS);
+  for (let i = LEAD_DAYS; i < LEAD_DAYS + DAYS_SHOWN; i++) {
+    const d = new Date(Date.UTC(manilaNow.getUTCFullYear(), manilaNow.getUTCMonth(), manilaNow.getUTCDate() + i));
+    if (d.getUTCDay() === 0) continue;
+    days.push({
+      iso: d.toISOString().slice(0, 10),
+      label: d.toLocaleDateString('en-PH', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }),
+    });
+  }
+  return days;
+}
 
 /**
  * PHP endpoint that mails the lead to the Hostinger inbox. Relative on web so a
@@ -55,7 +81,11 @@ export default function BookScreen() {
   const [address, setAddress] = useState('');
   const [bill, setBill] = useState('');
   const [property, setProperty] = useState<string>(PROPERTY[0]);
-  const [when, setWhen] = useState<string>(WHEN[0]);
+  const [email, setEmail] = useState('');
+  const [days] = useState(visitDays);
+  const [dates, setDates] = useState<string[]>([]);
+  const [time, setTime] = useState<string>(TIMES[2]);
+  const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState('');
   const [summary, setSummary] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>('idle');
@@ -70,6 +100,7 @@ export default function BookScreen() {
     if (!name.trim()) missing.push('your name');
     if (!phone.trim()) missing.push('a mobile number');
     if (!address.trim()) missing.push('a barangay or address');
+    if (!dates.length) missing.push('at least one day you are free');
 
     if (missing.length) {
       setError(`Still needed: ${missing.join(', ')}.`);
@@ -78,6 +109,11 @@ export default function BookScreen() {
     }
     if (phone.replace(/\D/g, '').length < 10) {
       setError('That mobile number looks too short — please check it.');
+      nudge(shake);
+      return;
+    }
+    if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError('That email address does not look right — please check it, or leave it blank.');
       nudge(shake);
       return;
     }
@@ -91,10 +127,12 @@ export default function BookScreen() {
         'SURVEY REQUEST — BRYLLIANT SOLAR',
         `Name:      ${name.trim()}`,
         `Mobile:    ${phone.trim()}`,
+        ...(email.trim() ? [`Email:     ${email.trim()}`] : []),
         `Property:  ${property}`,
         `Address:   ${address.trim()}`,
         `Bill:      ${Number.isFinite(billNum) ? `${peso(billNum)} / month` : 'not given'}`,
-        `Best time: ${when}`,
+        `Free on:   ${days.filter((d) => dates.includes(d.iso)).map((d) => d.label).join(', ')}`,
+        `Time:      ${time}`,
       ].join('\n')
     );
     setStatus('sending');
@@ -111,18 +149,21 @@ export default function BookScreen() {
           phone: phone.trim(),
           address: address.trim(),
           bill: bill.trim(),
+          email: email.trim(),
           property,
-          when,
+          dates,
+          time,
           company: '', // honeypot: only a bot ever fills this
         }),
       });
       if (__DEV__ && !(res.headers.get('content-type') ?? '').includes('application/json')) {
         throw new Error('The booking form needs the PHP API: run npm run dev:api and dev:proxy, then open localhost:3000.');
       }
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; confirmed?: boolean; error?: string } | null;
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error ?? `The server returned ${res.status}.`);
       }
+      setConfirmed(Boolean(data.confirmed));
       setStatus('sent');
     } catch (e) {
       setError(
@@ -179,7 +220,12 @@ export default function BookScreen() {
               </ThemedText>
               <ThemedText type="small" style={{ color: Brand.sand }}>
                 It is in our inbox now. We will call {phone.trim()} to confirm a time, usually within
-                one working day. Keep a copy below in case you want to follow up.
+                one working day.{' '}
+                {confirmed
+                  ? `A confirmation is on its way to ${email.trim()}.`
+                  : email.trim()
+                    ? 'We could not email you a confirmation, so keep a copy of the summary below.'
+                    : 'Keep a copy below in case you want to follow up.'}
               </ThemedText>
               <View style={[styles.recap, { borderColor: Brand.seaglass }]}>
                 <ThemedText type="data" style={{ color: Brand.bone }} selectable>
@@ -225,6 +271,14 @@ export default function BookScreen() {
                   autoComplete="tel"
                 />
                 <Field
+                  label="Email for a confirmation (optional)"
+                  value={email}
+                  onChange={setEmail}
+                  placeholder="you@example.com"
+                  keyboardType="email-address"
+                  autoComplete="email"
+                />
+                <Field
                   label="Barangay or address"
                   value={address}
                   onChange={setAddress}
@@ -251,11 +305,32 @@ export default function BookScreen() {
 
                 <View style={{ gap: Spacing.two }}>
                   <ThemedText type="eyebrow" themeColor="textMuted">
-                    Best time to visit
+                    Days you are free for the visit
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textMuted">
+                    Pick every day that works. We will call to confirm one of them.
                   </ThemedText>
                   <View style={styles.chipRow}>
-                    {WHEN.map((w) => (
-                      <Chip key={w} label={w} selected={when === w} onPress={() => setWhen(w)} />
+                    {days.map((d) => (
+                      <Chip
+                        key={d.iso}
+                        label={d.label}
+                        selected={dates.includes(d.iso)}
+                        onPress={() =>
+                          setDates((cur) => (cur.includes(d.iso) ? cur.filter((x) => x !== d.iso) : [...cur, d.iso]))
+                        }
+                      />
+                    ))}
+                  </View>
+                </View>
+
+                <View style={{ gap: Spacing.two }}>
+                  <ThemedText type="eyebrow" themeColor="textMuted">
+                    Time of day
+                  </ThemedText>
+                  <View style={styles.chipRow}>
+                    {TIMES.map((w) => (
+                      <Chip key={w} label={w} selected={time === w} onPress={() => setTime(w)} />
                     ))}
                   </View>
                 </View>
@@ -308,8 +383,8 @@ function Field({
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
-  keyboardType?: 'default' | 'numeric' | 'phone-pad';
-  autoComplete?: 'name' | 'tel';
+  keyboardType?: 'default' | 'numeric' | 'phone-pad' | 'email-address';
+  autoComplete?: 'name' | 'tel' | 'email';
 }) {
   const t = useTheme();
   return (
@@ -324,6 +399,7 @@ function Field({
         placeholderTextColor={t.textMuted}
         keyboardType={keyboardType ?? 'default'}
         autoComplete={autoComplete}
+        autoCapitalize={keyboardType === 'email-address' ? 'none' : undefined}
         accessibilityLabel={label}
         style={[styles.input, { color: t.text, borderColor: t.lineStrong, backgroundColor: t.background }]}
       />
