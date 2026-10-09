@@ -11,6 +11,9 @@
  *   STAFF_USERS   staff sign-in; entries from `npm run staff:hash`, joined with ;
  *   DB_NAME, DB_USER, DB_PASSWORD   the MySQL database for saved quotes
  *   DB_HOST       optional, defaults to localhost
+ *   MAIL_USER, MAIL_PASSWORD   the Hostinger mailbox the booking form sends from
+ *   MAIL_TO       optional, where survey requests land (defaults to MAIL_USER)
+ *   MAIL_HOST, MAIL_PORT       optional, default smtp.hostinger.com:465
  *
  * Missing variables only warn: the site still deploys, and the affected API
  * answers with a clear "not set up" error until they are set.
@@ -22,8 +25,9 @@ const path = require('path');
 const GROUPS = [
   { feature: 'staff sign-in', keys: ['STAFF_USERS'] },
   { feature: 'saved quotes', keys: ['DB_NAME', 'DB_USER', 'DB_PASSWORD'] },
+  { feature: 'booking form email', keys: ['MAIL_USER', 'MAIL_PASSWORD'] },
 ];
-const OPTIONAL = ['DB_HOST'];
+const OPTIONAL = ['DB_HOST', 'MAIL_TO', 'MAIL_HOST', 'MAIL_PORT'];
 
 // npm runs scripts from the project root.
 const out = path.join(process.cwd(), 'dist', 'api', 'lib', 'env.php');

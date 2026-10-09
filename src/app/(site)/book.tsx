@@ -116,6 +116,9 @@ export default function BookScreen() {
           company: '', // honeypot: only a bot ever fills this
         }),
       });
+      if (__DEV__ && !(res.headers.get('content-type') ?? '').includes('application/json')) {
+        throw new Error('The booking form needs the PHP API: run npm run dev:api and dev:proxy, then open localhost:3000.');
+      }
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error ?? `The server returned ${res.status}.`);

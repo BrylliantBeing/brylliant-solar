@@ -7,10 +7,9 @@ declare(strict_types=1);
  * Lives in public/api/ so that `expo export` copies it verbatim into dist/ and the
  * Hostinger build deploys it to https://solar.brylletan.com/api/quote.php.
  *
- * Mail credentials are NOT in this file and are not in git. They are read from
- * ../private/mail-config.php, one level above the document root, so a redeploy
- * (which replaces the document root) cannot clobber them and the public repo
- * cannot leak them.
+ * Mail credentials are NOT in this file and are not in git. They are hPanel
+ * environment variables, written to api/lib/env.php at build time by
+ * scripts/write-server-env.js — see load_config() below.
  */
 
 const MAX_PER_HOUR = 6;
@@ -20,7 +19,26 @@ header('Cache-Control: no-store');
 
 /* ------------------------------------------------------------------ config */
 
+require_once __DIR__ . '/lib/server-env.php';
+
+/**
+ * SMTP settings come from hPanel environment variables (MAIL_USER, MAIL_PASSWORD,
+ * MAIL_TO, MAIL_HOST, MAIL_PORT), like every other server secret. The older
+ * private/mail-config.php above the document root still works as a fallback.
+ */
 function load_config(): array {
+    $user = server_env('MAIL_USER');
+    $pass = server_env('MAIL_PASSWORD');
+    if ($user !== '' && $pass !== '') {
+        return [
+            'host' => server_env('MAIL_HOST') ?: 'smtp.hostinger.com',
+            'port' => (int) (server_env('MAIL_PORT') ?: 465),
+            'user' => $user,
+            'pass' => $pass,
+            'to'   => server_env('MAIL_TO') ?: $user,
+        ];
+    }
+
     $docroot = $_SERVER['DOCUMENT_ROOT'] ?? '';
     $candidates = [];
     if ($docroot !== '') {
@@ -36,7 +54,7 @@ function load_config(): array {
             }
         }
     }
-    throw new RuntimeException('mail-config.php not found, unreadable, or incomplete');
+    throw new RuntimeException('MAIL_USER / MAIL_PASSWORD are not set and no private/mail-config.php was found');
 }
 
 /* -------------------------------------------------------------------- http */

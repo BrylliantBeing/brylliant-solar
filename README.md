@@ -75,8 +75,8 @@ first three installations.
 ## Before launch
 
 - [ ] Replace placeholder contact details (footer, booking screen)
-- [ ] Wire the booking form to an inbox, Messenger handoff or CRM — it currently
-      validates and produces a summary for the customer to send
+- [x] Wire the booking form to an inbox — set the `MAIL_*` variables below and
+      redeploy
 - [ ] Replace `assets/images/` icons and splash with the brand mark
 - [ ] Add the brand typefaces (Bricolage Grotesque, Newsreader, IBM Plex Mono)
       via `expo-font`; the app currently uses platform system fonts
@@ -89,6 +89,14 @@ first three installations.
 The app is light-only, matching the website. The dark palette is already defined
 in `src/constants/theme.ts`; set `FORCE_LIGHT = false` in `src/hooks/use-theme.ts`
 and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
+
+## Booking form
+
+`book.tsx` posts to `public/api/quote.php`, which emails the request over SMTP
+using the `MAIL_*` variables in the table under "Internal pages". If sending
+fails, the customer still sees a summary to send on Messenger. To try it locally,
+add `MAIL_*` lines to `.env.dev.local` and run `npm run dev:api`, `npm run dev:proxy`
+and `npm run web`, then open http://localhost:3000/book.
 
 ## Internal pages (/internal)
 
@@ -105,6 +113,10 @@ Environment variables), never in git:
 | `DB_USER` | the MySQL user |
 | `DB_PASSWORD` | the MySQL user's password |
 | `DB_HOST` | optional, defaults to `localhost` |
+| `MAIL_USER` | booking form: the Hostinger mailbox it sends from, e.g. `website@solar.brylletan.com` |
+| `MAIL_PASSWORD` | that mailbox's password (not your hPanel login) |
+| `MAIL_TO` | optional, where survey requests land; defaults to `MAIL_USER` |
+| `MAIL_HOST`, `MAIL_PORT` | optional, default `smtp.hostinger.com` and `465` |
 
 Hostinger gives these to the build, not to PHP, so `npm run build:web` ends with
 `scripts/write-server-env.js`, which writes them to `dist/api/lib/env.php`
