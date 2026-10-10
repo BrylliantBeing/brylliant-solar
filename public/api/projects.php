@@ -8,6 +8,8 @@ declare(strict_types=1);
  *   POST {action: "save", id?, customer, phone, email, address, monthlyBill, property, freeDates, timePref, notes}
  *        -> { ok, project }   (without id: a new manual project)
  *   POST {action: "close", id, closed}            -> { ok }
+ *   POST {action: "reject", id, reason}           -> { ok, unscheduled }  (takes off any survey still to come)
+ *   POST {action: "restore", id}                  -> { ok }  (back to active)
  *   POST {action: "permit", projectId, step, doneOn|null, owner, notes}  -> { ok }
  *        Setting "submitted" or "approved" also puts a marker on the calendar.
  */
@@ -34,6 +36,7 @@ function project_row(array $r): array {
         'source'      => $r['source'],
         'notes'       => (string) ($r['notes'] ?? ''),
         'status'      => $r['status'],
+        'rejectReason' => (string) ($r['reject_reason'] ?? ''),
         'createdAt'   => utc_iso($r['created_at']),
         'surveyAt'    => utc_iso($r['survey_at'] ?? null),
     ];
@@ -158,6 +161,33 @@ try {
     if ($action === 'close') {
         $stmt = $pdo->prepare('UPDATE projects SET status = ?, updated_by = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?');
         $stmt->execute([!empty($in['closed']) ? 'closed' : 'active', $staff['username'], (int) ($in['id'] ?? 0)]);
+        reply(200, ['ok' => true]);
+    }
+
+    /* ---------------------------------------------------- reject, restore */
+
+    if ($action === 'reject') {
+        $id = (int) ($in['id'] ?? 0);
+        $reason = text_field($in, 'reason', 300);
+        if ($reason === '') {
+            reply(422, ['ok' => false, 'error' => 'Say why, so the reason is on record.']);
+        }
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare(
+            'UPDATE projects SET status = \'rejected\', reject_reason = ?, updated_by = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?'
+        );
+        $stmt->execute([$reason, $staff['username'], $id]);
+        // Surveys still to come are off; past ones stay as a record.
+        $del = $pdo->prepare('DELETE FROM events WHERE project_id = ? AND kind = \'survey\' AND start_at > UTC_TIMESTAMP()');
+        $del->execute([$id]);
+        $pdo->commit();
+        reply(200, ['ok' => true, 'unscheduled' => $del->rowCount()]);
+    }
+
+    if ($action === 'restore') {
+        $pdo->prepare(
+            'UPDATE projects SET status = \'active\', reject_reason = NULL, updated_by = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?'
+        )->execute([$staff['username'], (int) ($in['id'] ?? 0)]);
         reply(200, ['ok' => true]);
     }
 

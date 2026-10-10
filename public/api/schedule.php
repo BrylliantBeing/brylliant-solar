@@ -60,7 +60,7 @@ try {
         if ($from === null || $to === null || $from >= $to) {
             reply(422, ['ok' => false, 'error' => 'Give a from and to time.']);
         }
-        $sql = 'SELECT e.*, p.customer, p.phone, p.address, p.email, p.monthly_bill, p.property, p.free_dates_json
+        $sql = 'SELECT e.*, p.customer, p.phone, p.address, p.email, p.monthly_bill, p.property, p.free_dates_json, p.time_pref
                   FROM events e JOIN projects p ON p.id = e.project_id
                  WHERE e.start_at < :to AND e.end_at > :from';
         $args = ['from' => $from, 'to' => $to];
@@ -92,6 +92,7 @@ try {
                     'monthlyBill' => $r['monthly_bill'] !== null ? (float) $r['monthly_bill'] : null,
                     'property'    => $r['property'],
                     'freeDates'   => json_decode($r['free_dates_json'], true) ?: [],
+                    'timePref'    => $r['time_pref'],
                 ];
             }
             return [

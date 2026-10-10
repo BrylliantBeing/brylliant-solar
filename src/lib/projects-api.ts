@@ -19,7 +19,9 @@ export type Project = {
   timePref: string;
   source: 'booking' | 'manual' | 'quote';
   notes: string;
-  status: 'active' | 'closed';
+  status: 'active' | 'closed' | 'rejected';
+  /** Why the survey request was turned down; empty unless rejected */
+  rejectReason: string;
   createdAt: string;
   /** First survey booked, ISO UTC; null = still to schedule */
   surveyAt: string | null;
@@ -67,6 +69,16 @@ export async function saveProject(input: ProjectInput): Promise<Project> {
 
 export async function closeProject(id: number, closed: boolean): Promise<void> {
   await request('', post({ action: 'close', id, closed }));
+}
+
+/** Turns a survey request down; any survey still to come comes off the calendar. */
+export async function rejectProject(id: number, reason: string): Promise<number> {
+  return (await request<{ unscheduled: number }>('', post({ action: 'reject', id, reason }))).unscheduled;
+}
+
+/** Undoes a rejection. */
+export async function restoreProject(id: number): Promise<void> {
+  await request('', post({ action: 'restore', id }));
 }
 
 /** doneOn null clears the step. */

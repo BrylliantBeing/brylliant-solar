@@ -166,7 +166,11 @@ calculated result, so a quote reopens exactly as it was saved.
 `jobs` (a quote's line items as edited), `events` + `event_staff` (calendar
 bookings and who's on them) and `permits` (dates of each permit step). A job
 books ceil(panels / 20) installation days plus one inspection day, skipping
-Sundays; a survey is 3 hours. Clashes are warned about, never refused.
+Sundays; a survey is 3 hours. Clashes, and surveys outside the days or time of
+day the customer asked for, are warned about, never refused. A survey request
+can be rejected with a reason: it moves to a Rejected list (restorable), any
+survey still to come for it comes off the calendar, and the customer is not
+emailed.
 
 Any future internal API (dashboards, status) must start with
 `require __DIR__ . '/lib/staff-session.php'; require_owner();` (or

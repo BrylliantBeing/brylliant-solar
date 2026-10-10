@@ -31,6 +31,8 @@ import {
   planInstall,
   planSurvey,
   scheduleWarnings,
+  timePrefText,
+  timePrefWindow,
   todayInManila,
   type CalendarEvent,
   type CrewMember,
@@ -230,6 +232,7 @@ export default function Calendar() {
       customer: (id: number) => projects.get(id)?.customer ?? `Project #${id}`,
       name: (u: string) => names.get(u) ?? u,
       freeDates: (id: number) => projects.get(id)?.freeDates ?? [],
+      timePref: (id: number) => projects.get(id)?.timePref ?? '',
       permitApproved: (id: number) => {
         const s = permitStatus(pipeline.permits, id);
         return s?.step === 'approved' ? s.doneOn : null;
@@ -243,6 +246,8 @@ export default function Calendar() {
   }, [owner, pipeline, staff, shown, planned, placing]);
 
   const freeDays = placing?.kind === 'survey' ? placing.project.freeDates : [];
+  const timePref = placing?.kind === 'survey' ? placing.project.timePref : '';
+  const freeWindow = timePrefWindow(timePref);
   const step = (n: number) => setAnchor((a) => (view === 'week' ? addDays(a, 7 * n) : `${addMonth(a.slice(0, 7), n)}-01`));
   const placingKey: PlacingKey = placing
     ? placing.kind === 'survey'
@@ -281,8 +286,8 @@ export default function Calendar() {
           </ThemedText>
           <ThemedText type="small" themeColor="textSecondary">
             {placing.kind === 'survey'
-              ? `Pick a start time: ${SURVEY_HOURS} hours on site.` +
-                (freeDays.length ? ' Shaded days are the ones they said they are free.' : '')
+              ? `Pick a start time: ${SURVEY_HOURS} hours on site. ${whenFree(freeDays, timePref)}` +
+                (freeDays.length || freeWindow ? ' Shaded on the calendar.' : '')
               : `Pick the first day: ${installPlan(placing.job.panels).installDays} install day(s) for ${placing.job.panels} panels, ` +
                 'then 1 day for inspection and connections. Sundays are skipped.'}
           </ThemedText>
@@ -332,6 +337,7 @@ export default function Calendar() {
         onSlot={placing ? pick : undefined}
         onItem={(i) => i.event && setSelected(i.event)}
         highlightDays={freeDays}
+        highlightWindow={freeWindow}
       />
     ) : (
       <MonthGrid
@@ -428,6 +434,14 @@ export default function Calendar() {
   );
 }
 
+/** "They asked for mornings (07:00–12:00) on Wed 14 Oct, Thu 15 Oct." */
+function whenFree(freeDays: string[], timePref: string): string {
+  const when = timePrefText(timePref);
+  const days = freeDays.filter((d) => d >= todayInManila());
+  if (!when && !days.length) return 'They gave no days or time of day.';
+  return `They asked for ${when ?? 'any time of day'}${days.length ? ` on ${days.map((d) => dayLabel(d)).join(', ')}` : ''}.`;
+}
+
 const addMonth = (month: string, n: number) => {
   const d = new Date(`${month}-01T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + n);
@@ -486,6 +500,11 @@ function EventDetail({
         {p.address ? <ThemedText type="small">Address: {p.address}</ThemedText> : null}
         {p.phone ? <ThemedText type="small">Mobile: {p.phone}</ThemedText> : null}
         {owner && p.email ? <ThemedText type="small" themeColor="textSecondary">{p.email}</ThemedText> : null}
+        {owner && e.kind === 'survey' && (p.timePref || p.freeDates?.length) ? (
+          <ThemedText type="small" themeColor="textSecondary">
+            {whenFree(p.freeDates ?? [], p.timePref ?? '')}
+          </ThemedText>
+        ) : null}
         {owner && (p.monthlyBill || p.property) ? (
           <ThemedText type="small" themeColor="textSecondary">
             {[p.monthlyBill ? `${peso(p.monthlyBill)}/mo` : null, p.property].filter(Boolean).join(' · ')}

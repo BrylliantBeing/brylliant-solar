@@ -32,6 +32,7 @@ export type CalendarEvent = {
     monthlyBill?: number | null;
     property?: string;
     freeDates?: string[];
+    timePref?: string;
   };
 };
 
@@ -43,6 +44,22 @@ export const PANELS_PER_INSTALL_DAY = 20;
 /** The calendar's working day, in minutes after Manila midnight. */
 export const DAY_START = 7 * 60;
 export const DAY_END = 18 * 60;
+
+/**
+ * The time of day the customer asked for on the booking form, as minutes after
+ * Manila midnight. "Any time" (or nothing) has no window. TIMES in book.tsx.
+ */
+export function timePrefWindow(pref: string | undefined): { from: number; to: number } | null {
+  if (pref === 'Morning') return { from: DAY_START, to: 12 * 60 };
+  if (pref === 'Afternoon') return { from: 12 * 60, to: DAY_END };
+  return null;
+}
+
+/** "mornings (07:00–12:00)"; null for any time. */
+export function timePrefText(pref: string | undefined): string | null {
+  const w = timePrefWindow(pref);
+  return w ? `${pref!.toLowerCase()}s (${clock(w.from)}–${clock(w.to)})` : null;
+}
 
 /* ---------------- Manila dates ---------------- */
 
@@ -167,6 +184,8 @@ export type ScheduleContext = {
   name: (username: string) => string;
   /** Days the customer said they are free; empty = no preference */
   freeDates: (projectId: number) => string[];
+  /** Morning, Afternoon or Any time, from the booking form */
+  timePref: (projectId: number) => string;
   /** Manila day the permit was approved, or null */
   permitApproved: (projectId: number) => string | null;
   /** Earliest survey start (ISO), from the database rather than just the loaded week */
@@ -217,6 +236,14 @@ export function scheduleWarnings(events: Checked[], ctx: ScheduleContext): strin
     const day = manilaDay(e.start);
     if (free.length && !free.includes(day)) {
       out.add(`${ctx.customer(e.projectId)}: survey on ${dayLabel(day)}, which isn't one of the days they said they're free.`);
+    }
+    const pref = ctx.timePref(e.projectId);
+    const window = timePrefWindow(pref);
+    if (window && (manilaMinutes(e.start) < window.from || manilaMinutes(e.start) + (Date.parse(e.end) - Date.parse(e.start)) / 60000 > window.to)) {
+      out.add(
+        `${ctx.customer(e.projectId)}: survey at ${clock(manilaMinutes(e.start))}–${clock(manilaMinutes(e.end))}, ` +
+          `but they asked for ${timePrefText(pref)}.`,
+      );
     }
   }
   return [...out];

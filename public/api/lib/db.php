@@ -89,7 +89,7 @@ function ensure_schema(PDO $pdo): void {
             -- booking (the website form), manual (typed in by staff) or quote (made from a saved quote)
             source          VARCHAR(16)   NOT NULL,
             notes           TEXT          NULL,
-            -- active or closed
+            -- active, closed or rejected
             status          VARCHAR(16)   NOT NULL DEFAULT 'active',
             created_by      VARCHAR(64)   NOT NULL,
             updated_by      VARCHAR(64)   NOT NULL,
@@ -98,6 +98,15 @@ function ensure_schema(PDO $pdo): void {
             KEY idx_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         SQL);
+
+    $hasReject = $pdo->query(
+        "SELECT 1 FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'reject_reason'"
+    )->fetch();
+    if (!$hasReject) {
+        // Why a survey request was turned down (status = rejected)
+        $pdo->exec('ALTER TABLE projects ADD COLUMN reject_reason VARCHAR(300) NULL AFTER status');
+    }
 
     $hasProject = $pdo->query(
         "SELECT 1 FROM information_schema.COLUMNS

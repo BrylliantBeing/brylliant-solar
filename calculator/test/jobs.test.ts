@@ -151,6 +151,7 @@ test('Schedule warnings: double-booking, install before permit and survey, surve
     customer: (id) => `P${id}`,
     name: (u) => u,
     freeDates: (id) => (id === 1 ? ['2026-10-13'] : []),
+    timePref: () => 'Any time',
     permitApproved: () => null,
     surveyAt: () => null,
   });
@@ -159,4 +160,21 @@ test('Schedule warnings: double-booking, install before permit and survey, surve
   assert.ok(warnings.some((w) => w === 'P3: installation booked with no site survey.'));
   assert.ok(warnings.some((w) => w.startsWith('P1: survey on') && w.includes("free")));
   assert.ok(!warnings.some((w) => w.startsWith('P2: survey')));
+});
+
+test('A survey outside the time of day they asked for is warned about', () => {
+  const crew = defaultCrew('survey', directory);
+  const ctx = {
+    customer: (id: number) => `P${id}`,
+    name: (u: string) => u,
+    freeDates: () => [],
+    timePref: (id: number) => (id === 1 ? 'Morning' : 'Afternoon'),
+    permitApproved: () => null,
+    surveyAt: () => null,
+  };
+  const at = (projectId: number, minutes: number) => planSurvey('2026-10-12', minutes, crew).map((e) => ({ ...e, projectId }));
+  assert.deepEqual(scheduleWarnings(at(1, 9 * 60), ctx), [], '09:00–12:00 fits a morning');
+  assert.deepEqual(scheduleWarnings(at(1, 13 * 60), ctx), ['P1: survey at 13:00–16:00, but they asked for mornings (07:00–12:00).']);
+  assert.deepEqual(scheduleWarnings(at(2, 13 * 60), ctx), [], '13:00–16:00 fits an afternoon');
+  assert.equal(scheduleWarnings(at(2, 10 * 60), ctx).length, 1);
 });

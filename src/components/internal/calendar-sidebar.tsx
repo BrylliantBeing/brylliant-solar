@@ -12,6 +12,8 @@ import { useTheme } from '@/hooks/use-theme';
 import {
   PERMIT_STEPS,
   closeProject,
+  rejectProject,
+  restoreProject,
   saveProject,
   setPermitStep,
   type Permit,
@@ -129,6 +131,7 @@ export function CalendarSidebar({
                 onChanged={onChanged}
               />
             ))}
+            <RejectedList projects={pipeline.projects.filter((p) => p.status === 'rejected')} onChanged={onChanged} />
           </>
         ) : null}
 
@@ -227,8 +230,18 @@ function ProjectCard({
   const t = useTheme();
   const [editing, setEditing] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
+  /** Survey requests are turned down with a reason rather than closed. */
+  const [rejecting, setRejecting] = useState(false);
+  const rejectable = kind === 'survey';
   const [error, setError] = useState<string | null>(null);
-  const basics = [p.monthlyBill ? `${peso(p.monthlyBill)}/mo` : null, p.property || null].filter(Boolean).join(' · ');
+  const basics = [
+    p.monthlyBill ? `${peso(p.monthlyBill)}/mo` : null,
+    p.property || null,
+    // Only surveys care when in the day; "Any time" says nothing.
+    kind === 'survey' && p.timePref && p.timePref !== 'Any time' ? `${p.timePref.toLowerCase()}s` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   async function close() {
     if (!confirmClose) {
@@ -292,7 +305,7 @@ function ProjectCard({
                 label="Free on"
                 value={p.freeDates.length ? p.freeDates.map((d) => dayLabel(d)).join(', ') : ''}
               />
-              <Detail label="Time" value={p.timePref} />
+              <Detail label="Time of day" value={p.timePref} />
               <Detail label="Notes" value={p.notes} />
               <Detail
                 label="From"
@@ -304,16 +317,128 @@ function ProjectCard({
               {onPlace ? <SmallButton label={placing ? 'Placing…' : 'Place on calendar'} onPress={onPlace} strong /> : null}
               {jobId ? <SmallButton label="Open job" onPress={() => router.push({ pathname: '/internal/job', params: { id: String(jobId) } })} /> : null}
               <SmallButton label="Edit details" onPress={() => setEditing(true)} />
-              <SmallButton label={confirmClose ? 'Confirm close' : 'Close project'} onPress={close} />
+              {rejectable ? (
+                !rejecting ? <SmallButton label="Reject" onPress={() => setRejecting(true)} /> : null
+              ) : (
+                <SmallButton label={confirmClose ? 'Confirm close' : 'Close project'} onPress={close} />
+              )}
             </View>
+            {rejecting ? <RejectForm project={p} onDone={() => { setRejecting(false); onChanged(); }} onCancel={() => setRejecting(false)} /> : null}
             {error ? <MessageList title="Could not close" tone="warn" items={[error]} /> : null}
           </View>
         )
+      ) : rejecting ? (
+        <RejectForm project={p} onDone={() => { setRejecting(false); onChanged(); }} onCancel={() => setRejecting(false)} />
       ) : onPlace && !placing ? (
-        <View style={{ alignSelf: 'flex-start' }}>
+        <View style={styles.buttons}>
           <SmallButton label="Place on calendar" onPress={onPlace} />
+          {rejectable ? <SmallButton label="Reject" onPress={() => setRejecting(true)} /> : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+const REJECT_REASONS = ['Outside our service area', 'Not a good fit for solar', 'Duplicate request', 'Not a real request', 'Customer cancelled'];
+
+/** Why it's being turned down; the reason stays on the request in the Rejected list. */
+function RejectForm({ project, onDone, onCancel }: { project: Project; onDone: () => void; onCancel: () => void }) {
+  const t = useTheme();
+  const [reason, setReason] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const text = [reason, note.trim()].filter(Boolean).join(' — ');
+
+  async function submit() {
+    if (!text) {
+      setError('Pick a reason or write one.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await rejectProject(project.id, text);
+      onDone();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={[styles.permit, { borderColor: t.line }]}>
+      <ThemedText type="eyebrow" themeColor="textMuted">
+        Reject {project.customer}&apos;s request because
+      </ThemedText>
+      <View style={styles.buttons}>
+        {REJECT_REASONS.map((r) => (
+          <Chip key={r} label={r} selected={reason === r} onPress={() => setReason((x) => (x === r ? null : r))} />
+        ))}
+      </View>
+      <TextInput
+        value={note}
+        onChangeText={setNote}
+        placeholder="Anything to add (optional)"
+        placeholderTextColor={t.textMuted}
+        accessibilityLabel="Rejection note"
+        style={[styles.input, { color: t.text, borderColor: t.lineStrong, backgroundColor: t.backgroundElement }]}
+      />
+      <ThemedText type="small" themeColor="textMuted" style={{ fontSize: 12 }}>
+        It moves to Rejected below, where you can restore it. A survey already booked for it comes off the calendar.
+        The customer isn&apos;t told; call or message them yourself.
+      </ThemedText>
+      {error ? <MessageList title="Could not reject" tone="warn" items={[error]} /> : null}
+      <View style={styles.buttons}>
+        <SmallButton label={busy ? 'Rejecting…' : 'Reject request'} onPress={submit} strong />
+        <SmallButton label="Cancel" onPress={onCancel} />
+      </View>
+    </View>
+  );
+}
+
+/** Turned-down requests, newest first, each with its reason and a way back. */
+function RejectedList({ projects, onChanged }: { projects: Project[]; onChanged: () => void }) {
+  const t = useTheme();
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (projects.length === 0) return null;
+  return (
+    <View style={{ gap: Spacing.two, marginTop: Spacing.two }}>
+      <Pressable onPress={() => setOpen((o) => !o)} accessibilityRole="button" accessibilityState={{ expanded: open }}>
+        <ThemedText type="eyebrow" themeColor="textMuted">
+          {open ? '▾' : '▸'} Rejected ({projects.length})
+        </ThemedText>
+      </Pressable>
+      {open
+        ? projects.map((p) => (
+            <View key={p.id} style={[styles.card, { borderColor: t.line, backgroundColor: t.background, opacity: 0.85 }]}>
+              <View style={styles.cardHead}>
+                <JobBadge kind="survey" projectId={p.id} customer={p.customer} size={22} />
+                <View style={{ flex: 1, gap: 1 }}>
+                  <ThemedText type="smallBold" numberOfLines={1}>
+                    {p.customer}
+                  </ThemedText>
+                  <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 11 }} numberOfLines={1}>
+                    {p.address || 'No address'}
+                  </ThemedText>
+                  <ThemedText type="small" themeColor="textSecondary" style={{ fontSize: 12 }}>
+                    {p.rejectReason}
+                  </ThemedText>
+                </View>
+                <SmallButton
+                  label="Restore"
+                  onPress={() =>
+                    restoreProject(p.id)
+                      .then(onChanged)
+                      .catch((e: Error) => setError(e.message))
+                  }
+                />
+              </View>
+            </View>
+          ))
+        : null}
+      {error ? <MessageList title="Could not restore" tone="warn" items={[error]} /> : null}
     </View>
   );
 }

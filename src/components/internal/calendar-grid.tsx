@@ -81,16 +81,25 @@ export function WeekGrid({
   onSlot,
   onItem,
   highlightDays = [],
+  highlightWindow = null,
 }: {
   days: string[];
   items: GridItem[];
   today: string;
   onSlot?: (day: string, minutes: number) => void;
   onItem: (item: GridItem) => void;
+  /** Days the customer is free */
   highlightDays?: string[];
+  /** The part of those days they asked for (minutes after midnight); null = all day */
+  highlightWindow?: { from: number; to: number } | null;
 }) {
   const t = useTheme();
   const allDay = items.filter((i) => i.allDay);
+  /** No free days given but a time of day: that time on every working day. */
+  const freeDay = (day: string) => (highlightDays.length ? highlightDays.includes(day) : !!highlightWindow && weekday(day) !== 0);
+  const preferred = (day: string, minutes: number) =>
+    freeDay(day) && (!highlightWindow || (minutes >= highlightWindow.from && minutes < highlightWindow.to));
+  const windowName = highlightWindow ? (highlightWindow.from < 12 * 60 ? 'mornings' : 'afternoons') : null;
   const timed = items.filter((i) => !i.allDay);
 
   return (
@@ -101,13 +110,13 @@ export function WeekGrid({
         {days.map((day) => {
           const sunday = weekday(day) === 0;
           return (
-            <View key={day} style={[styles.col, styles.head, highlightDays.includes(day) && { backgroundColor: t.backgroundSelected }]}>
+            <View key={day} style={[styles.col, styles.head, freeDay(day) && { backgroundColor: t.backgroundSelected }]}>
               <ThemedText type="eyebrow" themeColor={day === today ? 'accent' : sunday ? 'textMuted' : 'textSecondary'}>
                 {new Date(`${day}T00:00:00Z`).toLocaleDateString('en-PH', { timeZone: 'UTC', weekday: 'short', day: 'numeric' })}
               </ThemedText>
-              {highlightDays.includes(day) ? (
+              {freeDay(day) ? (
                 <ThemedText type="data" style={{ fontSize: 10, color: t.accent }}>
-                  customer free
+                  {windowName ? `free ${windowName}` : 'customer free'}
                 </ThemedText>
               ) : sunday ? (
                 <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 10 }}>
@@ -167,7 +176,6 @@ export function WeekGrid({
               styles.col,
               { borderLeftColor: t.line, borderLeftWidth: 1, height: ROWS * ROW_H },
               weekday(day) === 0 && { backgroundColor: t.backgroundSelected },
-              highlightDays.includes(day) && { backgroundColor: t.backgroundSelected },
             ]}>
             {Array.from({ length: ROWS }, (_, r) => (
               <Pressable
@@ -177,6 +185,7 @@ export function WeekGrid({
                 accessibilityLabel={onSlot ? `${day} ${clock(DAY_START + r * SLOT_MIN)}` : undefined}
                 style={({ hovered }: { hovered?: boolean }) => [
                   { height: ROW_H, borderTopWidth: r % 2 === 0 ? 1 : 0, borderTopColor: t.line },
+                  preferred(day, DAY_START + r * SLOT_MIN) && { backgroundColor: t.backgroundSelected },
                   onSlot && hovered && { backgroundColor: t.line },
                 ]}
               />
