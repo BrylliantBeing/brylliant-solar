@@ -167,6 +167,30 @@ if (count($hits) >= MAX_PER_HOUR) {
 $hits[] = time();
 @file_put_contents($stamp, implode(',', $hits), LOCK_EX);
 
+/* ------------------------------------------------------------ store request */
+
+/**
+ * Saved first, so the request reaches the staff calendar even if the email
+ * fails; and if the database is down, the email still goes out as before.
+ */
+$stored = false;
+try {
+    require_once __DIR__ . '/lib/db.php';
+    $billNum = (float) preg_replace('/[^\d.]/', '', $bill);
+    $stmt = db()->prepare(
+        'INSERT INTO projects (customer, phone, email, address, monthly_bill, property, free_dates_json, time_pref,
+            source, created_by, updated_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'booking\', \'website\', \'website\', UTC_TIMESTAMP(), UTC_TIMESTAMP())'
+    );
+    $stmt->execute([
+        $name, $phone, $email, $address, $billNum > 0 ? $billNum : null, $type,
+        json_encode(array_keys($dates)), $time,
+    ]);
+    $stored = true;
+} catch (Throwable $e) {
+    error_log('[quote.php] store: ' . $e->getMessage());
+}
+
 /* --------------------------------------------------------------- send mail */
 
 /** Reads one SMTP reply, following multi-line continuations ("250-" vs "250 "). */
@@ -276,12 +300,16 @@ $body = implode("\n", [
     'Received ' . date('D, d M Y H:i') . ' server time, from ' . $ip,
 ]);
 
+$cfg = null;
 try {
     $cfg = load_config();
     smtp_send($cfg, (string) ($cfg['to'] ?? $cfg['user']), 'Brylliant Solar website', $subject, $body, $email);
 } catch (Throwable $e) {
     error_log('[quote.php] ' . $e->getMessage());
-    fail(502, 'We could not send that just now. Please message or call us instead.');
+    // Already on the staff calendar, so the customer doesn't need to send it again.
+    if (!$stored) {
+        fail(502, 'We could not send that just now. Please message or call us instead.');
+    }
 }
 
 /*
@@ -292,7 +320,7 @@ try {
  * failure here is logged and reported, not fatal.
  */
 $confirmed = false;
-if ($email !== '') {
+if ($email !== '' && $cfg !== null) {
     $digits = (string) preg_replace('/[^\d+ ]/', '', $phone);
     $confirmation = implode("\n", [
         'Hi,',

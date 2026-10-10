@@ -491,6 +491,12 @@ export default function QuoteCalculator() {
           <SmallButton label={saving ? 'Saving…' : 'Save quote'} onPress={() => save(true)} strong />
         )}
         {Platform.OS === 'web' ? <SmallButton label={copied ? 'Copied ✓' : 'Copy summary'} onPress={copySummary} /> : null}
+        {saved && !unsaved && !stale ? (
+          <SmallButton
+            label="Create job"
+            onPress={() => router.push({ pathname: '/internal/job', params: { quote: String(saved.summary.id) } })}
+          />
+        ) : null}
       </View>
       <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 11 }}>
         {saved
@@ -498,6 +504,7 @@ export default function QuoteCalculator() {
             (unsaved ? ' · unsaved changes' : '')
           : 'Not saved yet'}
         {stale ? ' · recalculate before saving' : ''}
+        {saved && unsaved && !stale ? ' · save to create a job from it' : ''}
       </ThemedText>
       {saveError ? <MessageList title="Could not save" tone="warn" items={[saveError]} /> : null}
     </View>

@@ -12,11 +12,19 @@ import { useTheme } from '@/hooks/use-theme';
 /** Internal pages are work tools, so they run wider than the marketing site. */
 export const InternalMaxWidth = 1120;
 
-const NAV: { label: string; href: Href; match: (path: string) => boolean }[] = [
-  { label: 'Dashboard', href: '/internal', match: (p) => p === '/internal' },
-  { label: 'Quote', href: '/internal/quote', match: (p) => p.startsWith('/internal/quote') },
-  { label: 'Saved', href: '/internal/saved', match: (p) => p.startsWith('/internal/saved') },
-  { label: 'Status', href: '/internal/status', match: (p) => p.startsWith('/internal/status') },
+/** Everyone except the owner sees only the calendar; app/internal/_layout.tsx redirects the rest. */
+const NAV: { label: string; href: Href; match: (path: string) => boolean; ownerOnly?: boolean }[] = [
+  { label: 'Dashboard', href: '/internal', match: (p) => p === '/internal', ownerOnly: true },
+  { label: 'Calendar', href: '/internal/calendar', match: (p) => p.startsWith('/internal/calendar') },
+  { label: 'Quote', href: '/internal/quote', match: (p) => p.startsWith('/internal/quote'), ownerOnly: true },
+  { label: 'Saved', href: '/internal/saved', match: (p) => p.startsWith('/internal/saved'), ownerOnly: true },
+  {
+    label: 'Jobs',
+    href: '/internal/jobs',
+    match: (p) => p === '/internal/jobs' || p.startsWith('/internal/job'),
+    ownerOnly: true,
+  },
+  { label: 'Status', href: '/internal/status', match: (p) => p.startsWith('/internal/status'), ownerOnly: true },
 ];
 
 export function StaffShell({ children }: { children: ReactNode }) {
@@ -36,7 +44,7 @@ export function StaffShell({ children }: { children: ReactNode }) {
             </ThemedText>
           </View>
           <View style={styles.links}>
-            {NAV.map((item) => {
+            {NAV.filter((item) => !item.ownerOnly || user?.role === 'owner').map((item) => {
               const active = item.match(path);
               return (
                 <Link key={item.label} href={item.href} asChild>

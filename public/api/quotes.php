@@ -33,6 +33,7 @@ function reply(int $status, array $body): void {
 function summary(array $row): array {
     return [
         'id'           => (int) $row['id'],
+        'projectId'    => $row['project_id'] !== null ? (int) $row['project_id'] : null,
         'customer'     => $row['customer'],
         'totalPrice'   => (float) $row['total_price'],
         'systemKwp'    => (float) $row['system_kwp'],
@@ -46,10 +47,10 @@ function summary(array $row): array {
     ];
 }
 
-const SUMMARY_COLUMNS = 'id, customer, total_price, system_kwp, battery_kwh, reduction_pct,
+const SUMMARY_COLUMNS = 'id, project_id, customer, total_price, system_kwp, battery_kwh, reduction_pct,
     created_by, updated_by, created_at, updated_at';
 
-$staff = require_staff();
+$staff = require_owner();
 
 try {
     $pdo = db();

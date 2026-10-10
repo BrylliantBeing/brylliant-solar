@@ -3,8 +3,8 @@
  *
  *   npm run staff:hash
  *
- * Asks for a username, display name and password (typed hidden, so it stays
- * out of shell history), then prints `username:Display Name:hash`. Paste that
+ * Asks for a username, display name, role and password (typed hidden, so it
+ * stays out of shell history), then prints `username:Display Name:hash:role`. Paste that
  * into the STAFF_USERS environment variable in hPanel; separate several people
  * with ";". Verified by verify_staff_password() in public/api/lib/staff-session.php.
  */
@@ -13,7 +13,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const readline = require('readline');
 
-const ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 recommendation
+const ITERATIONS = 600000; // OWASP's PBKDF2-SHA256 recommendation; must match STAFF_HASH_ITERATIONS in public/api/lib/staff-session.php
+/** Must match STAFF_ROLES in public/api/lib/staff-session.php. */
+const ROLES = ['owner', 'lead_installer', 'installer', 'electrician'];
 
 /** Piped input (scripts, tests) is read up front; a terminal is asked line by line. */
 const piped = process.stdin.isTTY ? null : fs.readFileSync(0, 'utf8').split(/\r?\n/);
@@ -56,6 +58,9 @@ function fail(message) {
   const name = (await ask('Display name: ')).trim() || username;
   if (/[:;]/.test(name)) fail('The display name cannot contain ":" or ";".');
 
+  const role = (await ask(`Role (${ROLES.join(', ')}): `)).trim().toLowerCase();
+  if (!ROLES.includes(role)) fail(`The role must be one of: ${ROLES.join(', ')}.`);
+
   const password = await ask('Password (hidden): ', true);
   if (password.length < 10) fail('Use at least 10 characters.');
   if ((await ask('Password again (hidden): ', true)) !== password) fail('The passwords did not match.');
@@ -63,7 +68,7 @@ function fail(message) {
 
   const salt = crypto.randomBytes(16);
   const hash = crypto.pbkdf2Sync(password, salt, ITERATIONS, 32, 'sha256');
-  const entry = `${username}:${name}:pbkdf2-sha256.${ITERATIONS}.${salt.toString('base64url')}.${hash.toString('base64url')}`;
+  const entry = `${username}:${name}:pbkdf2-sha256.${ITERATIONS}.${salt.toString('base64url')}.${hash.toString('base64url')}:${role}`;
 
   console.log('\nAdd this to STAFF_USERS in hPanel (join several with ";"), then redeploy:\n');
   console.log(entry);

@@ -77,6 +77,8 @@ export interface ElectricalPart {
   unit?: string;
   /** True until the price comes from a store quote */
   estimate?: boolean;
+  /** Where the job sheet lists it, e.g. "DC side"; parts without one go under "Electrical" */
+  category?: string;
 }
 
 export interface QuoteDefaults {
@@ -264,7 +266,9 @@ export interface QuoteResult {
     freight: number;
     /** Sum of electricalParts */
     electrical: number;
-    electricalParts: { name: string; quantity: number; unit?: string; php: number; total: number; estimate: boolean }[];
+    electricalParts: {
+      name: string; quantity: number; unit?: string; php: number; total: number; estimate: boolean; category?: string;
+    }[];
     labor: number;
     netMetering: number;
     misc: number;
@@ -307,28 +311,28 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
     // Estimates for a grid-tie job, 2 strings of 10 × 725 W into one 10 kW inverter. Ratings from the
     // JKM725N (Isc 18.74 A, 35 A series fuse) datasheet and HYX-S10K-S manual (45.4 A rated, 60 A max OCPD).
     // DC side
-    { name: 'DC breaker 2P 32 A 600 V+', php: 425, qty: 1, per: 'string', estimate: true },
-    { name: 'DC surge protector Type II 600 V', php: 500, qty: 1, per: 'string', estimate: true },
-    { name: 'MC4 pair, home runs', php: 70, qty: 4, per: 'string', estimate: true },
-    { name: 'MC4 pair, jumper spares', php: 70, qty: 0.5, per: 'panel', estimate: true },
-    { name: 'DC enclosure IP65', php: 650, qty: 1, per: 'inverter', estimate: true },
+    { name: 'DC breaker 2P 32 A 600 V+', php: 425, qty: 1, per: 'string', estimate: true, category: 'DC side' },
+    { name: 'DC surge protector Type II 600 V', php: 500, qty: 1, per: 'string', estimate: true, category: 'DC side' },
+    { name: 'MC4 pair, home runs', php: 70, qty: 4, per: 'string', estimate: true, category: 'DC side' },
+    { name: 'MC4 pair, jumper spares', php: 70, qty: 0.5, per: 'panel', estimate: true, category: 'DC side' },
+    { name: 'DC enclosure IP65', php: 650, qty: 1, per: 'inverter', estimate: true, category: 'DC side' },
     // AC side
-    { name: 'AC breaker 2P 60 A', php: 375, qty: 1, per: 'inverter', estimate: true }, // HYX-S10K-S max OCPD is 60 A; one per inverter
-    { name: 'AC surge protector Type II 275 V', php: 650, qty: 1, per: 'inverter', estimate: true },
-    { name: 'AC enclosure', php: 500, qty: 1, per: 'inverter', estimate: true },
-    { name: 'House panel breaker 2P 60 A', php: 1150, qty: 1, per: 'inverter', estimate: true },
-    { name: '14 mm² THHN, line + neutral', php: 200, qty: 20, per: 'inverter', unit: 'm', estimate: true },
-    { name: 'Lockable safety switch 2P 60 A', php: 2750, qty: 1, per: 'job', estimate: true },
+    { name: 'AC breaker 2P 60 A', php: 375, qty: 1, per: 'inverter', estimate: true, category: 'AC side' }, // HYX-S10K-S max OCPD is 60 A; one per inverter
+    { name: 'AC surge protector Type II 275 V', php: 650, qty: 1, per: 'inverter', estimate: true, category: 'AC side' },
+    { name: 'AC enclosure', php: 500, qty: 1, per: 'inverter', estimate: true, category: 'AC side' },
+    { name: 'House panel breaker 2P 60 A', php: 1150, qty: 1, per: 'inverter', estimate: true, category: 'AC side' },
+    { name: '14 mm² THHN, line + neutral', php: 200, qty: 20, per: 'inverter', unit: 'm', estimate: true, category: 'AC side' },
+    { name: 'Lockable safety switch 2P 60 A', php: 2750, qty: 1, per: 'job', estimate: true, category: 'AC side' },
     // Earthing
-    { name: 'Ground rod 5/8" × 10 ft + clamp', php: 900, qty: 1, per: 'job', estimate: true },
-    { name: '8 mm² THHN green', php: 110, qty: 30, per: 'job', unit: 'm', estimate: true },
-    { name: 'Earthing clip', php: 20, qty: 1, per: 'panel', estimate: true },
+    { name: 'Ground rod 5/8" × 10 ft + clamp', php: 900, qty: 1, per: 'job', estimate: true, category: 'Earthing' },
+    { name: '8 mm² THHN green', php: 110, qty: 30, per: 'job', unit: 'm', estimate: true, category: 'Earthing' },
+    { name: 'Earthing clip', php: 20, qty: 1, per: 'panel', estimate: true, category: 'Earthing' },
     // Conduit and small parts
-    { name: 'Conduit, 3 m length', php: 120, qty: 10, per: 'job', estimate: true },
-    { name: 'Conduit fittings and straps', php: 1150, qty: 1, per: 'job', unit: 'lot', estimate: true },
-    { name: 'UV cable ties and clips', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true },
-    { name: 'Lugs and heat shrink', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true },
-    { name: 'Warning labels', php: 350, qty: 1, per: 'job', unit: 'set', estimate: true },
+    { name: 'Conduit, 3 m length', php: 120, qty: 10, per: 'job', estimate: true, category: 'Conduit & small parts' },
+    { name: 'Conduit fittings and straps', php: 1150, qty: 1, per: 'job', unit: 'lot', estimate: true, category: 'Conduit & small parts' },
+    { name: 'UV cable ties and clips', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true, category: 'Conduit & small parts' },
+    { name: 'Lugs and heat shrink', php: 450, qty: 1, per: 'job', unit: 'lot', estimate: true, category: 'Conduit & small parts' },
+    { name: 'Warning labels', php: 350, qty: 1, per: 'job', unit: 'set', estimate: true, category: 'Conduit & small parts' },
   ],
   miscCost: 0,
   targetReduction: 0.95,
@@ -1726,7 +1730,10 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   const basisCount: Record<PartBasis, number> = { job: 1, inverter: inverterCount, string: strings, panel: panels };
   const electricalParts = cfg.electricalParts.map((part) => {
     const quantity = Math.ceil(part.qty * basisCount[part.per] - 1e-9);
-    return { name: part.name, quantity, unit: part.unit, php: part.php, total: quantity * part.php, estimate: !!part.estimate };
+    return {
+      name: part.name, quantity, unit: part.unit, php: part.php, total: quantity * part.php, estimate: !!part.estimate,
+      category: part.category,
+    };
   });
   const electricalCost = electricalParts.reduce((sum, part) => sum + part.total, 0);
   const estimated = electricalParts.filter((part) => part.estimate && part.quantity > 0);

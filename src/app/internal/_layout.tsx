@@ -1,4 +1,4 @@
-import { Slot } from 'expo-router';
+import { Redirect, Slot, usePathname } from 'expo-router';
 import Head from 'expo-router/head';
 import { ActivityIndicator, View } from 'react-native';
 
@@ -25,7 +25,8 @@ export default function InternalLayout() {
 }
 
 function Gate() {
-  const { status } = useStaffSession();
+  const { status, user } = useStaffSession();
+  const path = usePathname();
   const t = useTheme();
 
   if (status === 'loading') {
@@ -36,6 +37,10 @@ function Gate() {
     );
   }
   if (status !== 'signedIn') return <StaffSignIn />;
+  // Only the owner gets past the calendar. This hides the pages; the APIs enforce it.
+  if (user?.role !== 'owner' && !path.startsWith('/internal/calendar')) {
+    return <Redirect href="/internal/calendar" />;
+  }
   return (
     <StaffShell>
       <Slot />

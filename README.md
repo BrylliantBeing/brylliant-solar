@@ -26,6 +26,9 @@ src/
     internal/        staff-only pages behind sign-in — see "Internal pages"
       quote.tsx      hybrid quote calculator (calculator/ engine)
       saved.tsx      saved quotes (MySQL via api/quotes.php)
+      job.tsx        job builder: a quote's bill of materials, editable (api/jobs.php)
+      jobs.tsx       every job
+      calendar.tsx   surveys, installations and permits (api/schedule.php, api/projects.php)
   components/
     brand-mark.tsx   the Vinta Sun logo, drawn with Views (no SVG dependency)
     themed-text.tsx  the type scale
@@ -92,27 +95,28 @@ and `userInterfaceStyle` back to `"automatic"` in `app.json` to enable it.
 
 ## Booking form
 
-`book.tsx` posts to `public/api/quote.php`, which emails the request over SMTP
+`book.tsx` posts to `public/api/quote.php`, which saves the request as a project
+(it appears in the Surveys tab of the staff calendar) and emails it over SMTP
 using the `MAIL_*` variables in the table under "Internal pages". The customer
 picks the days they are free on a calendar (2 to 30 days ahead, no Sundays) and, if they
 give an email address, gets an automatic confirmation from the same script —
 don't also turn on Hostinger's mailbox auto-reply, or it will answer the
 website mailbox rather than the customer. If sending
-fails, the customer still sees a summary to send on Messenger. To try it locally,
+fails and the request couldn't be saved either, the customer sees a summary to send on Messenger. To try it locally,
 add `MAIL_*` lines to `.env.dev.local` and run `npm run dev:api`, `npm run dev:proxy`
 and `npm run web`, then open http://localhost:3000/book.
 
 ## Internal pages (/internal)
 
-Staff tools: a dashboard, the hybrid quote calculator, and status checks
-(dashboard and status are placeholders for now).
+Staff tools: a dashboard, the hybrid quote calculator, jobs, the jobs calendar,
+and status checks (status is a placeholder for now).
 
 All server settings are **environment variables in hPanel** (your site ->
 Environment variables), never in git:
 
 | Variable | Value |
 |---|---|
-| `STAFF_USERS` | staff accounts, one entry per person from `npm run staff:hash`, joined with `;` |
+| `STAFF_USERS` | owner sign-in that works without the database, from `npm run staff:hash`, joined with `;`; everyone else is added on the dashboard (see "Staff accounts") |
 | `DB_NAME` | the MySQL database name (`u327442596_solar`) |
 | `DB_USER` | the MySQL user |
 | `DB_PASSWORD` | the MySQL user's password |
@@ -129,18 +133,45 @@ be `npm run build:web`, and after changing a variable you must redeploy** so the
 build writes the new value.
 
 **Sign-in is a PHP session**, not client-side state: `public/api/auth.php`
-checks passwords against `STAFF_USERS`. To add someone, run `npm run staff:hash`,
-type their username, name and password (hidden), and append the printed
-`username:Name:hash` line to `STAFF_USERS` with a `;`. Remove an entry and
-redeploy to revoke access; sessions also end after 2 h idle or 12 h.
+checks passwords against the dashboard accounts and `STAFF_USERS`. Sessions end
+after 2 h idle or 12 h.
+
+**Staff accounts are made on the dashboard.** Under "Staff accounts", the owner
+adds people with a name, role and password (one is generated to pass on),
+changes roles, resets passwords and removes accounts. These live in the MySQL
+`staff` table and take effect at once, with no redeploy. A password reset or a
+removal signs that person out everywhere, and a removal takes them off upcoming
+bookings. An owner can't demote or remove themselves, so an owner always
+remains.
+
+The roles are `owner`, `lead_installer`, `installer` and `electrician`. The owner
+sees everything; everyone else sees only the calendar, and on it only the
+events they're booked on (name, address and phone, no bills or prices). The
+calendar's default crews come from the roles: the first owner, lead installer
+and electrician survey; the lead and the first two installers install; the
+electrician inspects and handles permits.
+
+**`STAFF_USERS` is the way in when there's no account yet** (a fresh deploy) or
+the database is down. Its entries are `username:Name:hash:role` from
+`npm run staff:hash`; an entry without a role is an owner, and one with a
+misspelt role can't sign in. They show on the dashboard marked "in hPanel" and
+can only be changed there (then redeploy). Keep your own owner entry in it.
 
 **Saved quotes live in MySQL.** `public/api/lib/db.php` creates the `quotes`
 table on first use. Each row keeps the uploaded CSVs, the assumptions and the
 calculated result, so a quote reopens exactly as it was saved.
 
+**Jobs and the calendar live in MySQL too**, in tables `db.php` also creates:
+`projects` (one customer's pipeline, from a booking, a quote or typed in),
+`jobs` (a quote's line items as edited), `events` + `event_staff` (calendar
+bookings and who's on them) and `permits` (dates of each permit step). A job
+books ceil(panels / 20) installation days plus one inspection day, skipping
+Sundays; a survey is 3 hours. Clashes are warned about, never refused.
+
 Any future internal API (dashboards, status) must start with
-`require __DIR__ . '/lib/staff-session.php'; require_staff();` — the page gate
-alone hides the UI but cannot protect data.
+`require __DIR__ . '/lib/staff-session.php'; require_owner();` (or
+`require_staff()` if non-owners may use it, filtering what they see) — the page
+gate alone hides the UI but cannot protect data.
 
 In `npm run web` there is no PHP, so the sign-in screen offers a
 "Continue as local dev" button. It only exists in development builds.

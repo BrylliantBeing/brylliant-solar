@@ -100,10 +100,15 @@ try {
     start_staff_session();
     session_regenerate_id(true);
     $_SESSION['staff'] = $username;
+    $_SESSION['pw'] = password_stamp($account['hash']);
     $_SESSION['signed_in_at'] = time();
     $_SESSION['seen_at'] = time();
 
-    reply(200, ['ok' => true, 'user' => ['username' => $username, 'name' => (string) ($account['name'] ?? $username)]]);
+    reply(200, ['ok' => true, 'user' => [
+        'username' => $username,
+        'name'     => (string) ($account['name'] ?? $username),
+        'role'     => (string) ($account['role'] ?? 'owner'),
+    ]]);
 } catch (Throwable $e) {
     error_log('auth.php: ' . $e->getMessage());
     reply(500, ['ok' => false, 'error' => 'Sign-in is not set up on the server yet.']);

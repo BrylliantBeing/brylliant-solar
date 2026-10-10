@@ -100,6 +100,7 @@ export default function SavedQuotes() {
                 </ThemedText>
                 <View style={styles.buttons}>
                   <SmallButton label="Open" onPress={() => router.push({ pathname: '/internal/quote', params: { id: String(q.id) } })} />
+                  <SmallButton label="Create job" onPress={() => router.push({ pathname: '/internal/job', params: { quote: String(q.id) } })} />
                   <SmallButton label={confirming === q.id ? 'Confirm delete' : 'Delete'} onPress={() => remove(q.id)} />
                 </View>
               </View>

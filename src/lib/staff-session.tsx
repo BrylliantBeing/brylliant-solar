@@ -11,7 +11,17 @@ import { apiUrl } from '@/lib/api-base';
  */
 const ENDPOINT = apiUrl('/api/auth.php');
 
-export type StaffUser = { username: string; name: string };
+/** Must match STAFF_ROLES in public/api/lib/staff-session.php. */
+export type StaffRole = 'owner' | 'lead_installer' | 'installer' | 'electrician';
+
+export type StaffUser = { username: string; name: string; role: StaffRole };
+
+export const ROLE_LABELS: Record<StaffRole, string> = {
+  owner: 'Owner',
+  lead_installer: 'Lead installer',
+  installer: 'Installer',
+  electrician: 'Electrical engineer',
+};
 
 type Status =
   | 'loading'
@@ -102,7 +112,7 @@ export function StaffSessionProvider({ children }: PropsWithChildren) {
 
   const continueWithoutServer = useCallback(() => {
     if (!__DEV__) return;
-    setUser({ username: 'dev', name: 'Local dev' });
+    setUser({ username: 'dev', name: 'Local dev', role: 'owner' });
     setStatus('signedIn');
   }, []);
 

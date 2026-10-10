@@ -1,13 +1,10 @@
 import type { DateOrder, QuoteResult } from '@calculator/solarQuoteCalculator';
 
-import { apiUrl } from '@/lib/api-base';
+import { jsonEndpoint, post } from '@/lib/api-request';
 import type { defaultFieldText, defaultToggles } from '@/lib/quote-input';
 
-/**
- * Saved quotes, stored in MySQL through public/api/quotes.php (staff session
- * required). Relative on web so the session cookie stays first-party.
- */
-const ENDPOINT = apiUrl('/api/quotes.php');
+/** Saved quotes, stored in MySQL through public/api/quotes.php (owner only). */
+const request = jsonEndpoint('/api/quotes.php', 'Saved quotes');
 
 export type DataSource = { text: string; fileName: string | null };
 
@@ -24,6 +21,8 @@ export type QuoteInputs = {
 
 export type SavedQuoteSummary = {
   id: number;
+  /** The project a job made from this quote belongs to; missing on old servers */
+  projectId?: number | null;
   customer: string;
   totalPrice: number;
   systemKwp: number;
@@ -37,34 +36,6 @@ export type SavedQuoteSummary = {
 };
 
 export type SavedQuote = SavedQuoteSummary & { inputs: QuoteInputs; result: QuoteResult };
-
-type Reply<T> = { ok: true } & T;
-
-async function request<T>(query: string, init?: RequestInit): Promise<Reply<T>> {
-  let res: Response;
-  try {
-    res = await fetch(ENDPOINT + query, { credentials: 'include', ...init });
-  } catch {
-    throw new Error('Could not reach the server. Check your connection.');
-  }
-  if (!(res.headers.get('content-type') ?? '').includes('application/json')) {
-    throw new Error(
-      __DEV__
-        ? 'Saved quotes need the PHP server and MySQL, which the local dev server does not have.'
-        : 'The quotes service is not reachable.',
-    );
-  }
-  const body = (await res.json()) as { ok: boolean; error?: string } & T;
-  if (res.status === 401) throw new Error('Your session has ended. Reload the page and sign in again.');
-  if (!body.ok) throw new Error(body.error ?? 'The request failed.');
-  return body as Reply<T>;
-}
-
-const post = (body: object): RequestInit => ({
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body),
-});
 
 export async function listQuotes(search = ''): Promise<SavedQuoteSummary[]> {
   const q = search.trim() ? `?q=${encodeURIComponent(search.trim())}` : '';
