@@ -15,6 +15,7 @@ import { Card } from '@/components/ui/kit';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { applyDesignToJob } from '@/lib/design-bom';
+import { siteCenter } from '@/lib/design-geo';
 import {
   getDesign,
   saveDesign,
@@ -26,6 +27,7 @@ import {
 } from '@/lib/designs-api';
 import { getJob, saveJob } from '@/lib/jobs-api';
 import { loadPipeline, type Project, type ProjectJob } from '@/lib/projects-api';
+import { useYields } from '@/lib/pvgis';
 import { manilaTime } from '@/lib/quotes-api';
 
 type Step = 'site' | 'layout' | 'results' | 'plan';
@@ -130,6 +132,7 @@ function Designer({ projectId }: { projectId: number }) {
     };
   }, [projectId]);
 
+  const sunData = useYields(doc?.site ? siteCenter(doc.site) : null, doc?.layout.roofs);
   const result: DesignResult | null = useMemo(
     () =>
       doc
@@ -139,9 +142,10 @@ function Designer({ projectId }: { projectId: number }) {
             strings: doc.layout.strings,
             settings: doc.inputs.settings,
             overrides: doc.inputs.overrides,
+            yields: sunData.yields,
           })
         : null,
-    [doc],
+    [doc, sunData.yields],
   );
 
   if (loadError) {
@@ -277,6 +281,7 @@ function Designer({ projectId }: { projectId: number }) {
             overrides={doc.inputs.overrides}
             onSettings={(settings) => setInputs({ settings })}
             onOverrides={(overrides) => setInputs({ overrides })}
+            sunData={sunData}
           />
           <Panel title="Apply to a job">
             {jobs.length ? (

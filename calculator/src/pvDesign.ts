@@ -66,7 +66,15 @@ export type Layout = {
   /** Storeys under the roof the array sits on */
   floors: number;
   floorHeightM: number;
+  /** Pitched roof faces; a panel sits on the last-drawn face containing its centre. Absent = all flat. */
+  roofs?: RoofFace[];
 };
+
+/**
+ * One plane of a roof, outlined in plan. `azimuthDeg` is the compass direction
+ * the slope runs DOWN (the way the face looks): 0 N, 90 E, 180 S, 270 W.
+ */
+export type RoofFace = { id: string; points: LayoutPoint[]; pitchDeg: number; azimuthDeg: number };
 
 export type StringDef = { id: string; inverterId: string; /** 0-based */ mppt: number };
 
@@ -103,6 +111,11 @@ export type DesignSettings = {
   transformerZPct: number;
   serviceDropM: number;
   serviceDropMm2: number;
+  /**
+   * Taken off PVGIS's yield (already net of its 14% system loss). 12.5% makes
+   * PVGIS's best south roof (4.08) match the 3.5 kWh/kWp/day measured locally.
+   */
+  yieldDeratePct: number;
 };
 
 export const DESIGN_DEFAULTS: DesignSettings = {
@@ -130,6 +143,7 @@ export const DESIGN_DEFAULTS: DesignSettings = {
   transformerZPct: 2.5,
   serviceDropM: 30,
   serviceDropMm2: 14,
+  yieldDeratePct: 12.5,
 };
 
 /** A hand-picked size for one circuit, keyed by Circuit.id. */
@@ -141,6 +155,15 @@ export type DesignInput = {
   strings: StringDef[];
   settings?: Partial<DesignSettings>;
   overrides?: Record<string, CircuitOverride>;
+  /** PVGIS monthly kWh/kWp/day, fetched outside the engine; without it there is no sun analysis */
+  yields?: Yields | null;
+};
+
+/** Monthly average kWh per kWp per day, January first, straight from PVGIS. */
+export type Yields = {
+  faces: Record<string, number[]>;
+  flat: number[];
+  best: { pitchDeg: number; azimuthDeg: number; monthly: number[] };
 };
 
 /* ------------------------------------------------------------------ *
@@ -238,7 +261,36 @@ export type DesignResult = {
   circuits: Circuit[];
   shortCircuit: ShortCircuit | null;
   bom: BomLine[];
+  sun: SunResult | null;
   warnings: string[];
+};
+
+export type SunFace = {
+  /** The face id, or "" for panels on no face (treated as flat) */
+  id: string;
+  label: string;
+  pitchDeg: number;
+  azimuthDeg: number | null;
+  panels: number;
+  kwp: number;
+  /** After the derate */
+  perKwpDay: number;
+  kwhPerDay: number;
+  kwhPerYear: number;
+  monthlyKwh: number[];
+  /** Against the best orientation at the site, after the same derate; negative = worse */
+  vsBestPct: number;
+};
+
+export type SunResult = {
+  faces: SunFace[];
+  kwhPerYear: number;
+  kwhPerDay: number;
+  perKwpDay: number;
+  bestPerKwpDay: number;
+  best: { pitchDeg: number; azimuthDeg: number };
+  monthlyKwh: number[];
+  deratePct: number;
 };
 
 /* ------------------------------------------------------------------ *
@@ -441,9 +493,16 @@ export function calculateDesign(input: DesignInput): DesignResult {
     let neg = s.fallbackDcRunM;
     const estimated = !inv;
     if (inv) {
+      // Up a pitched face the run also climbs from the eave to the panel.
       const v = verticalDrop(layout, inv, s);
-      pos = manhattan(inv, members[0]) + v;
-      neg = manhattan(inv, members[members.length - 1]) + v;
+      const rise = (p: LayoutPanel) => {
+        const f = faceAt(layout.roofs, p);
+        return f ? heightAboveEave(f, p) : 0;
+      };
+      const first = members[0];
+      const last = members[members.length - 1];
+      pos = manhattan(inv, first) + v + rise(first);
+      neg = manhattan(inv, last) + v + rise(last);
     }
     const id = `dc-${st.id}`;
     const designA = 1.25 * 1.25 * st.iscA;
@@ -514,6 +573,25 @@ export function calculateDesign(input: DesignInput): DesignResult {
 
   const bom = buildBom({ layout, panel, inverters, strings, circuits, jumperM, mpptsUsed: mppts.length, settings: s });
 
+  /* ---------------- roof faces */
+
+  const roofs = layout.roofs ?? [];
+  if (roofs.length) {
+    const over = layout.panels.filter((p) => {
+      const f = faceAt(roofs, p);
+      return f && panelCorners(panel, p, roofs).some((c) => faceAt(roofs, c)?.id !== f.id);
+    }).length;
+    if (over) warnings.push(`${over} panel${over === 1 ? ' hangs' : 's hang'} over the edge of ${over === 1 ? 'its' : 'their'} roof face.`);
+  }
+  const sun = input.yields ? sunAnalysis(layout, panel, input.yields, s.yieldDeratePct) : null;
+  for (const f of sun?.faces ?? []) {
+    if (f.id && f.vsBestPct < -10) {
+      warnings.push(
+        `Roof ${f.id} (${round(f.pitchDeg, 0)}°, faces ${compass(f.azimuthDeg ?? 0)}) yields ${round(-f.vsBestPct, 0)}% less than the best orientation here.`,
+      );
+    }
+  }
+
   return {
     panel,
     inverters,
@@ -527,6 +605,7 @@ export function calculateDesign(input: DesignInput): DesignResult {
     circuits,
     shortCircuit,
     bom,
+    sun,
     warnings,
   };
 }
@@ -800,8 +879,11 @@ export function panelArray(a: {
   gapM: number;
   rowGapM: number;
   idPrefix: string;
+  /** Lay the array on this face: true spacing on the roof, foreshortened in plan */
+  face?: RoofFace | null;
 }): LayoutPanel[] {
   const { w, h } = panelSize(a.panel, a.orientation);
+  const m = projection(a.face ?? null);
   const width = a.cols * w + (a.cols - 1) * a.gapM;
   const height = a.rows * h + (a.rows - 1) * a.rowGapM;
   const rad = (a.rot * Math.PI) / 180;
@@ -812,10 +894,11 @@ export function panelArray(a: {
     for (let c = 0; c < a.cols; c += 1) {
       const lx = -width / 2 + w / 2 + c * (w + a.gapM);
       const ly = -height / 2 + h / 2 + r * (h + a.rowGapM);
+      const v = applyM(m, { x: lx * cos - ly * sin, y: lx * sin + ly * cos });
       out.push({
         id: `${a.idPrefix}-${r}-${c}`,
-        x: a.x + lx * cos - ly * sin,
-        y: a.y + lx * sin + ly * cos,
+        x: a.x + v.x,
+        y: a.y + v.y,
         rot: a.rot,
         orientation: a.orientation,
         rowId: `${a.idPrefix}-${r}`,
@@ -824,4 +907,184 @@ export function panelArray(a: {
     }
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Roof faces: geometry
+ *
+ * Plan coordinates are x east, y south. A face's down-slope direction u is
+ * (sin α, −cos α) for compass azimuth α. Seen from above, anything lying on
+ * the face is squashed along u by cos(pitch) and untouched across it; that is
+ * the whole projection, M = I + (cos θ − 1)·u·uᵀ.
+ * ------------------------------------------------------------------ */
+
+const rad = (deg: number) => (deg * Math.PI) / 180;
+
+export function pointInPolygon(p: LayoutPoint, pts: LayoutPoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i, i += 1) {
+    const a = pts[i];
+    const b = pts[j];
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+/** The face under a point: the last drawn wins where faces overlap. */
+export function faceAt(roofs: RoofFace[] | undefined, p: LayoutPoint): RoofFace | null {
+  if (!roofs) return null;
+  for (let i = roofs.length - 1; i >= 0; i -= 1) if (roofs[i].points.length >= 3 && pointInPolygon(p, roofs[i].points)) return roofs[i];
+  return null;
+}
+
+export function downslope(f: Pick<RoofFace, 'azimuthDeg'>): LayoutPoint {
+  return { x: Math.sin(rad(f.azimuthDeg)), y: -Math.cos(rad(f.azimuthDeg)) };
+}
+
+/** Plan projection of the face, as SVG matrix(a b c d 0 0) terms. Identity for a flat face. */
+export function projection(f: Pick<RoofFace, 'azimuthDeg' | 'pitchDeg'> | null): { a: number; b: number; c: number; d: number } {
+  if (!f) return { a: 1, b: 0, c: 0, d: 1 };
+  const u = downslope(f);
+  const k = Math.cos(rad(f.pitchDeg)) - 1;
+  return { a: 1 + k * u.x * u.x, b: k * u.x * u.y, c: k * u.x * u.y, d: 1 + k * u.y * u.y };
+}
+
+const applyM = (m: ReturnType<typeof projection>, v: LayoutPoint) => ({ x: m.a * v.x + m.c * v.y, y: m.b * v.x + m.d * v.y });
+
+/** How far down-slope the eave is: the largest u·v over the outline. */
+const eaveReach = (f: RoofFace) => Math.max(...f.points.map((v) => v.x * downslope(f).x + v.y * downslope(f).y));
+
+/** Height of a point on the face above its eave (lowest edge), in metres. */
+export function heightAboveEave(f: RoofFace, p: LayoutPoint): number {
+  const u = downslope(f);
+  return Math.max(0, eaveReach(f) - (u.x * p.x + u.y * p.y)) * Math.tan(rad(f.pitchDeg));
+}
+
+/** The rotation that runs a panel's rows along the eave, its long side down the slope in portrait. */
+export const autoRotation = (f: Pick<RoofFace, 'azimuthDeg'>) => (((f.azimuthDeg + 180) % 360) + 360) % 360;
+
+/** Corners of a panel as seen from above. */
+export function panelCorners(panel: PanelSpec, p: LayoutPanel, roofs: RoofFace[] | undefined): LayoutPoint[] {
+  const { w, h } = panelSize(panel, p.orientation);
+  const m = projection(faceAt(roofs, p));
+  const r = rad(p.rot);
+  return [
+    [-w / 2, -h / 2],
+    [w / 2, -h / 2],
+    [w / 2, h / 2],
+    [-w / 2, h / 2],
+  ].map(([lx, ly]) => {
+    const v = applyM(m, { x: lx * Math.cos(r) - ly * Math.sin(r), y: lx * Math.sin(r) + ly * Math.cos(r) });
+    return { x: p.x + v.x, y: p.y + v.y };
+  });
+}
+
+/**
+ * Keeps the panels on a face at their true spacing on the roof when the face's
+ * pitch or facing changes, including when it is first drawn under them (from a
+ * 0° face). Membership is decided once, against the old face. Positions are
+ * un-squashed along the old slope and squashed along the new one: about the
+ * face's lowest corner for a pitch change, so the bottom row stays at the
+ * eave, and about its middle when it turns.
+ * Panels whose rows followed the old eave are turned to follow the new one.
+ */
+export function refitFace(panels: LayoutPanel[], roofs: RoofFace[], oldFace: RoofFace, newFace: RoofFace): LayoutPanel[] {
+  const uo = downslope(oldFace);
+  const un = downslope(newFace);
+  const co = Math.cos(rad(oldFace.pitchDeg));
+  const cn = Math.cos(rad(newFace.pitchDeg));
+  if (co <= 1e-9) return panels;
+  const turn = newFace.azimuthDeg !== oldFace.azimuthDeg;
+  // A pitch change pivots on the eave; a turn pivots on the middle, which is the same whichever way the face slopes.
+  const anchor = turn
+    ? {
+        x: oldFace.points.reduce((a, v) => a + v.x, 0) / oldFace.points.length,
+        y: oldFace.points.reduce((a, v) => a + v.y, 0) / oldFace.points.length,
+      }
+    : oldFace.points.reduce((best, v) => (v.x * uo.x + v.y * uo.y > best.x * uo.x + best.y * uo.y ? v : best), oldFace.points[0]);
+  const oldRot = autoRotation(oldFace);
+  const members = new Set(panels.filter((p) => faceAt(roofs, p)?.id === oldFace.id).map((p) => p.id));
+  return panels.map((p) => {
+    if (!members.has(p.id)) return p;
+    const v = { x: p.x - anchor.x, y: p.y - anchor.y };
+    const ko = (1 / co - 1) * (uo.x * v.x + uo.y * v.y);
+    const t = { x: v.x + ko * uo.x, y: v.y + ko * uo.y };
+    const kn = (cn - 1) * (un.x * t.x + un.y * t.y);
+    const followed = Math.abs((((p.rot - oldRot) % 360) + 360) % 360) < 1e-6;
+    return {
+      ...p,
+      x: anchor.x + t.x + kn * un.x,
+      y: anchor.y + t.y + kn * un.y,
+      rot: turn && followed ? autoRotation(newFace) : p.rot,
+    };
+  });
+}
+
+/** Eight-point compass name for an azimuth. */
+export function compass(deg: number): string {
+  return ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+/** PVGIS's "aspect": 0 south, −90 east, 90 west, 180 north. */
+export function pvgisAspect(azimuthDeg: number): number {
+  const a = ((((azimuthDeg - 180) % 360) + 540) % 360) - 180;
+  return a === -180 ? 180 : a;
+}
+
+/* ------------------------------------------------------------------ *
+ * Sun analysis
+ * ------------------------------------------------------------------ */
+
+const DAYS = [31, 28.25, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const yearly = (monthly: number[]) => monthly.reduce((a, d, i) => a + d * DAYS[i], 0);
+
+/**
+ * Expected generation by roof face: PVGIS kWh/kWp/day for each face's pitch
+ * and facing, less the derate, times the kWp on it. Panels on no face use the
+ * flat-roof figures.
+ */
+export function sunAnalysis(layout: Layout, panel: PanelSpec, yields: Yields, deratePct: number): SunResult {
+  const keep = 1 - deratePct / 100;
+  const groups = new Map<string, LayoutPanel[]>();
+  for (const p of layout.panels) {
+    const id = faceAt(layout.roofs, p)?.id ?? '';
+    groups.set(id, [...(groups.get(id) ?? []), p]);
+  }
+  const bestYear = yearly(yields.best.monthly) * keep;
+  const bestPerKwpDay = bestYear / 365.25;
+  const faces: SunFace[] = [];
+  for (const f of [...(layout.roofs ?? []), null]) {
+    const id = f?.id ?? '';
+    const n = groups.get(id)?.length ?? 0;
+    if (!n && !f) continue;
+    const per = (f ? yields.faces[f.id] : yields.flat) ?? yields.flat;
+    const kwp = (n * panel.watts) / 1000;
+    const monthlyKwh = per.map((d, i) => round(d * keep * kwp * DAYS[i], 1));
+    const year = yearly(per) * keep;
+    faces.push({
+      id,
+      label: f ? `Roof ${f.id}` : 'No roof face (flat)',
+      pitchDeg: f?.pitchDeg ?? 0,
+      azimuthDeg: f?.azimuthDeg ?? null,
+      panels: n,
+      kwp: round(kwp, 3),
+      perKwpDay: round(year / 365.25, 3),
+      kwhPerDay: round((year / 365.25) * kwp, 1),
+      kwhPerYear: round(year * kwp, 0),
+      monthlyKwh,
+      vsBestPct: round((year / bestYear - 1) * 100, 1),
+    });
+  }
+  const kwhPerYear = faces.reduce((a, f) => a + f.kwhPerYear, 0);
+  const kwp = (layout.panels.length * panel.watts) / 1000;
+  return {
+    faces,
+    kwhPerYear: round(kwhPerYear, 0),
+    kwhPerDay: round(kwhPerYear / 365.25, 1),
+    perKwpDay: kwp > 0 ? round(kwhPerYear / 365.25 / kwp, 3) : 0,
+    bestPerKwpDay: round(bestPerKwpDay, 3),
+    best: { pitchDeg: yields.best.pitchDeg, azimuthDeg: yields.best.azimuthDeg },
+    monthlyKwh: DAYS.map((_, i) => round(faces.reduce((a, f) => a + f.monthlyKwh[i], 0), 1)),
+    deratePct,
+  };
 }

@@ -1,4 +1,4 @@
-import { panelSize, type Circuit, type DesignResult } from '@calculator/pvDesign';
+import { compass, downslope, faceAt, panelSize, projection, type Circuit, type DesignResult } from '@calculator/pvDesign';
 import type { ReactNode } from 'react';
 
 import { stringColor } from './strings';
@@ -316,8 +316,10 @@ function SitePlan({ x, y, w, h, data }: { x: number; y: number; w: number; h: nu
   const L0 = doc.layout;
   const site = siteBox(doc.site);
   // Fit what was placed, not the whole rectangle: a generous rectangle would shrink the array to a smudge.
+  const roofs = L0.roofs ?? [];
   const placed = [
     ...L0.panels.map((p) => ({ x: p.x, y: p.y })),
+    ...roofs.flatMap((f) => f.points),
     ...L0.inverters,
     ...(L0.meter ? [L0.meter] : []),
     ...(L0.panelboard ? [L0.panelboard] : []),
@@ -358,10 +360,21 @@ function SitePlan({ x, y, w, h, data }: { x: number; y: number; w: number; h: nu
             strokeWidth={0.3 / s}
             strokeDasharray={`${1.5 / s} ${1 / s}`}
           />
+          {roofs.map((f) => (
+            <polygon
+              key={`roof-${f.id}`}
+              points={f.points.map((v) => `${v.x},${v.y}`).join(' ')}
+              fill="none"
+              stroke={INK}
+              strokeWidth={0.35 / s}
+            />
+          ))}
           {L0.panels.map((p) => {
             const { w: pw, h: ph } = panelSize(result.panel, p.orientation);
+            // As seen from above, like the roof outline and the satellite view
+            const m = projection(faceAt(roofs, p));
             return (
-              <g key={p.id} transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}>
+              <g key={p.id} transform={`translate(${p.x} ${p.y}) matrix(${m.a} ${m.b} ${m.c} ${m.d} 0 0) rotate(${p.rot})`}>
                 <rect x={-pw / 2} y={-ph / 2} width={pw} height={ph} fill="#fff" stroke={INK} strokeWidth={0.25 / s} />
                 <line
                   x1={-pw / 2}
@@ -371,6 +384,51 @@ function SitePlan({ x, y, w, h, data }: { x: number; y: number; w: number; h: nu
                   stroke={stringColor(L0.strings, p.stringId)}
                   strokeWidth={0.2 / s}
                 />
+              </g>
+            );
+          })}
+          {/* Slope arrows and labels go over the panels, haloed so they read on top */}
+          {roofs.map((f) => {
+            const cx = f.points.reduce((a, v) => a + v.x, 0) / f.points.length;
+            const cy = f.points.reduce((a, v) => a + v.y, 0) / f.points.length;
+            const u = downslope(f);
+            const len = 6 / s;
+            return (
+              <g key={`roof-label-${f.id}`}>
+                <line
+                  x1={cx - (u.x * len) / 2}
+                  y1={cy - (u.y * len) / 2}
+                  x2={cx + (u.x * len) / 2}
+                  y2={cy + (u.y * len) / 2}
+                  stroke="#fff"
+                  strokeWidth={0.9 / s}
+                />
+                <line
+                  x1={cx - (u.x * len) / 2}
+                  y1={cy - (u.y * len) / 2}
+                  x2={cx + (u.x * len) / 2}
+                  y2={cy + (u.y * len) / 2}
+                  stroke={INK}
+                  strokeWidth={0.3 / s}
+                />
+                <path
+                  d={`M ${cx + (u.x * len) / 2} ${cy + (u.y * len) / 2} l ${(-u.x * 1.2 - u.y * 0.7) / s} ${(-u.y * 1.2 + u.x * 0.7) / s} l ${(u.y * 1.4) / s} ${(-u.x * 1.4) / s} Z`}
+                  fill={INK}
+                  stroke="#fff"
+                  strokeWidth={0.2 / s}
+                />
+                <text
+                  x={cx - u.x * (len / 2 + 2 / s)}
+                  y={cy - u.y * (len / 2 + 2 / s) + 0.6 / s}
+                  fontSize={1.7 / s}
+                  textAnchor="middle"
+                  fontFamily={FONT}
+                  fontWeight="bold"
+                  stroke="#fff"
+                  strokeWidth={0.5 / s}
+                  paintOrder="stroke">
+                  {`ROOF ${f.id} · ${f.pitchDeg}° FACING ${compass(f.azimuthDeg)}`}
+                </text>
               </g>
             );
           })}
@@ -561,6 +619,19 @@ function VoltageDropBlock({ x, y, w, data }: { x: number; y: number; w: number; 
   );
 }
 
+/** Expected generation, when the sun data was available at print time. */
+function sunLines(r: DesignResult): string[] {
+  if (!r.sun) return [];
+  return [
+    `EXPECTED GENERATION: ${r.sun.kwhPerYear.toLocaleString('en-PH')} KWH/YR (${n(r.sun.perKwpDay)} KWH/KWP/DAY)`,
+    ...r.sun.faces.map(
+      (f) =>
+        `  ${f.id ? `ROOF ${f.id} ${f.pitchDeg}° FACING ${compass(f.azimuthDeg ?? 0)}` : 'FLAT'}: ${f.panels} PCS, ${f.kwhPerYear.toLocaleString('en-PH')} KWH/YR`,
+    ),
+    `  PVGIS 2005–2023 LESS ${r.sun.deratePct}%; SHADING NOT INCLUDED`,
+  ];
+}
+
 function StringCalc({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
   const p = data.result.panel;
   const lines = data.result.strings.flatMap((s) => [
@@ -573,7 +644,7 @@ function StringCalc({ x, y, w, data }: { x: number; y: number; w: number; data: 
       <Heading x={x} y={y} w={w}>
         PANEL STRING CALCULATION
       </Heading>
-      <Lines x={x} y={y + 6} lines={[`${p.model.toUpperCase()} ${p.watts}W`, ...lines]} size={1.85} />
+      <Lines x={x} y={y + 6} lines={[`${p.model.toUpperCase()} ${p.watts}W`, ...lines, ...sunLines(data.result)]} size={1.85} />
     </g>
   );
 }

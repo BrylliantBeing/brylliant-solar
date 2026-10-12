@@ -1,17 +1,20 @@
-import { DESIGN_DEFAULTS, type CircuitOverride, type DesignResult, type DesignSettings } from '@calculator/pvDesign';
+import { compass, DESIGN_DEFAULTS, type CircuitOverride, type DesignResult, type DesignSettings } from '@calculator/pvDesign';
 import { useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 
 import { KeyValue, MessageList, NumberInput, Panel, SmallButton, Table } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
+import { Model } from '@/constants/solar';
 import { useTheme } from '@/hooks/use-theme';
+import type { SunData } from '@/lib/pvgis';
 
 const f = (n: number, dp = 1) => n.toLocaleString('en-PH', { maximumFractionDigits: dp, minimumFractionDigits: dp });
 
 /** Settings worth editing per job; the rest stay at DESIGN_DEFAULTS. */
 const SETTING_FIELDS: { key: keyof DesignSettings; label: string; unit: string; help?: string }[] = [
   { key: 'minAmbientC', label: 'Coldest morning', unit: '°C', help: 'Sets the cold-corrected Voc.' },
+  { key: 'yieldDeratePct', label: 'Sun derate', unit: '%', help: 'Off PVGIS, to match what local arrays measure.' },
   { key: 'vdropLimitPct', label: 'Voltage drop limit', unit: '%' },
   { key: 'minDcMm2', label: 'Smallest PV wire', unit: 'mm²' },
   { key: 'slackPct', label: 'Slack on runs', unit: '%' },
@@ -33,12 +36,14 @@ export function DesignResults({
   overrides,
   onSettings,
   onOverrides,
+  sunData,
 }: {
   result: DesignResult;
   settings: Partial<DesignSettings>;
   overrides: Record<string, CircuitOverride>;
   onSettings: (s: Partial<DesignSettings>) => void;
   onOverrides: (o: Record<string, CircuitOverride>) => void;
+  sunData?: SunData;
 }) {
   const t = useTheme();
   const r = result;
@@ -64,6 +69,8 @@ export function DesignResults({
         <KeyValue label="AC capacity" value={`${f(r.acKw, 2)} kW`} sub={r.inverters.map((i) => `${i.id}: ${i.spec.model}`).join(' · ')} />
         <KeyValue label="DC/AC ratio" value={r.dcAcRatio === null ? '—' : f(r.dcAcRatio, 2)} />
       </Panel>
+
+      <SunPanel result={r} sunData={sunData} />
 
       <Panel title="Strings">
         <Table
@@ -174,6 +181,50 @@ export function DesignResults({
 }
 
 /** Commits on blur, so a half-typed size doesn't recalculate on every keystroke. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Expected generation by roof face, from PVGIS less the derate. */
+function SunPanel({ result: r, sunData }: { result: DesignResult; sunData?: SunData }) {
+  const sun = r.sun;
+  if (!sun) {
+    return (
+      <Panel title="Sun">
+        <ThemedText type="small" themeColor={sunData?.error ? 'accentWarm' : 'textMuted'}>
+          {sunData?.error ?? (sunData?.loading ? 'Fetching sun data from PVGIS…' : 'Draw the site to get sun data.')}
+        </ThemedText>
+      </Panel>
+    );
+  }
+  const vs = (pct: number) => (Math.abs(pct) < 0.5 ? 'best' : `${pct > 0 ? '+' : ''}${f(pct, 0)}%`);
+  return (
+    <Panel title="Sun" right={sunData?.loading ? <ThemedText type="small" themeColor="textMuted">Updating…</ThemedText> : undefined}>
+      <KeyValue label="Expected generation" value={`${f(sun.kwhPerYear, 0)} kWh/yr`} sub={`${f(sun.kwhPerDay)} kWh a day on average`} total />
+      <KeyValue
+        label="Yield"
+        value={`${f(sun.perKwpDay, 2)} kWh/kWp/day`}
+        sub={`Best here: ${f(sun.bestPerKwpDay, 2)} at ${f(sun.best.pitchDeg, 0)}° facing ${compass(sun.best.azimuthDeg)} · quotes assume ${Model.yieldPerKwp}`}
+      />
+      <Table
+        head={['Roof', 'Pitch', 'Faces', 'Panels', 'kWp', 'kWh/kWp/day', 'kWh/yr', 'vs best']}
+        rows={sun.faces.map((x) => [
+          x.label,
+          `${f(x.pitchDeg, 0)}°`,
+          x.azimuthDeg === null ? '—' : compass(x.azimuthDeg),
+          String(x.panels),
+          f(x.kwp, 2),
+          f(x.perKwpDay, 2),
+          f(x.kwhPerYear, 0),
+          vs(x.vsBestPct),
+        ])}
+      />
+      <Table head={['', ...MONTHS]} rows={[['kWh', ...sun.monthlyKwh.map((k) => f(k, 0))]]} />
+      <ThemedText type="small" themeColor="textMuted">
+        {`${sunData?.source ?? 'PVGIS'} average, less ${sun.deratePct}% so a good south roof matches the 3.5 kWh/kWp/day measured locally. Shading from trees and neighbours is not included.`}
+      </ThemedText>
+    </Panel>
+  );
+}
+
 function OverrideField({ label, value, onChange }: { label: string; value: number | undefined; onChange: (v: string) => void }) {
   const t = useTheme();
   const saved = value !== undefined ? String(value) : '';

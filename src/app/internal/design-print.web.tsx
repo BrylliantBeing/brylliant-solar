@@ -11,7 +11,9 @@ import { MessageList, SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { siteCenter } from '@/lib/design-geo';
 import { getDesign } from '@/lib/designs-api';
+import { loadYields } from '@/lib/pvgis';
 
 /**
  * The app renders inside #root, a full-height flex box whose body never
@@ -41,9 +43,14 @@ export default function DesignPrint() {
   useEffect(() => {
     if (!projectId) return;
     getDesign(projectId)
-      .then(({ project, design }) => {
+      .then(async ({ project, design }) => {
         if (!design) throw new Error('This project has no saved design yet.');
         const doc = { site: design.site, layout: design.layout, inputs: design.inputs };
+        // The sheets print without the generation figures if PVGIS is down.
+        const c = siteCenter(doc.site);
+        const yields = await loadYields(c.lat, c.lng, doc.layout.roofs)
+          .then((r) => r.yields)
+          .catch(() => null);
         // Recalculated rather than read back, so the drawings match the current engine.
         const result = calculateDesign({
           panel: JINKO_725,
@@ -51,6 +58,7 @@ export default function DesignPrint() {
           strings: doc.layout.strings,
           settings: doc.inputs.settings,
           overrides: doc.inputs.overrides,
+          yields,
         });
         setData({ project, doc, result });
       })

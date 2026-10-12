@@ -1,4 +1,19 @@
-import { autoAssign, panelArray, panelSize, type LayoutPanel, type Orientation, type StringDef } from '@calculator/pvDesign';
+import {
+  autoAssign,
+  autoRotation,
+  compass,
+  downslope,
+  faceAt,
+  panelArray,
+  panelSize,
+  projection,
+  refitFace,
+  type LayoutPanel,
+  type LayoutPoint,
+  type Orientation,
+  type RoofFace,
+  type StringDef,
+} from '@calculator/pvDesign';
 import { INVERTERS, type PanelSpec } from '@calculator/pvDesignData';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
@@ -14,7 +29,7 @@ import { metresPerPixel, siteBox, siteCenter, siteTiles } from '@/lib/design-geo
 import { loadImagery, type Imagery } from '@/lib/imagery';
 import type { DesignSite } from '@/lib/designs-api';
 
-type Tool = 'select' | 'array' | 'string' | 'inverter' | 'meter' | 'panelboard' | 'measure';
+type Tool = 'select' | 'roof' | 'array' | 'string' | 'inverter' | 'meter' | 'panelboard' | 'measure';
 
 const TOOLS: { tool: Tool; label: string; hint: string }[] = [
   {
@@ -23,9 +38,14 @@ const TOOLS: { tool: Tool; label: string; hint: string }[] = [
     hint: 'Click a panel to select it, shift-click to add, double-click for its whole array. Drag to move; drag empty space to pan; scroll to zoom.',
   },
   {
+    tool: 'roof',
+    label: 'Roof face',
+    hint: 'Click each corner of one sloped roof face, then double-click or press Enter to finish (Esc cancels). Then set its pitch and which way it slopes down. Flat roofs need no face.',
+  },
+  {
     tool: 'array',
     label: 'Add panels',
-    hint: 'Set rows, columns and rotation below, then click where the middle of the array goes.',
+    hint: 'Set rows, columns and rotation below, then click where the middle of the array goes. On a roof face, rows follow the eave and panels are drawn as seen from above.',
   },
   {
     tool: 'string',
@@ -58,16 +78,48 @@ const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator
 
 const SHORTCUTS: [string, string][] = [
   [`${MOD} Z  /  ${MOD} Shift Z, ${MOD} Y`, 'Undo / redo'],
-  ['Delete, Backspace', 'Remove the selected panels, inverter, meter or panel board'],
+  ['Delete, Backspace', 'Remove the selected panels, roof face, inverter, meter or panel board'],
   [`${MOD} A`, 'Select every panel'],
   [`${MOD} C  /  ${MOD} X  /  ${MOD} V`, 'Copy / cut / paste panels (pastes 1 m down-right, unstrung)'],
   [`${MOD} D`, 'Duplicate the selected panels'],
   ['Arrows  /  Shift arrows', 'Move the selection 10 cm / 1 m'],
   ['R  /  Shift R', 'Rotate the selected panels 90° clockwise / anticlockwise'],
   ['[  /  ]', 'Rotate the selected panels 5°'],
-  ['Esc', 'Clear the selection and go back to Select'],
-  ['V  A  S  I  M  B', 'Tools: select, add panels, paint string, inverter, meter, panel board'],
+  ['Enter', 'Finish the roof face being drawn'],
+  ['Esc', 'Cancel drawing, clear the selection and go back to Select'],
+  ['V  F  A  S  I  M  B', 'Tools: select, roof face, add panels, paint string, inverter, meter, panel board'],
 ];
+
+const FACINGS = [0, 45, 90, 135, 180, 225, 270, 315];
+const ROOF_IDS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+const centroid = (pts: LayoutPoint[]) => ({
+  x: pts.reduce((a, v) => a + v.x, 0) / pts.length,
+  y: pts.reduce((a, v) => a + v.y, 0) / pts.length,
+});
+
+/** Compass bearing of a plan direction (x east, y south). */
+const bearing = (v: LayoutPoint) => ((Math.atan2(v.x, -v.y) * 180) / Math.PI + 360) % 360;
+
+/** The face edge nearest a point, and the bearing pointing out of the face across it: the eave's facing. */
+function outwardAcrossNearestEdge(f: RoofFace, p: LayoutPoint): number {
+  const c = centroid(f.points);
+  let best = { d: Infinity, az: f.azimuthDeg };
+  f.points.forEach((a, i) => {
+    const b = f.points[(i + 1) % f.points.length];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const len2 = ex * ex + ey * ey || 1;
+    const k = Math.max(0, Math.min(1, ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2));
+    const d = Math.hypot(p.x - (a.x + k * ex), p.y - (a.y + k * ey));
+    if (d >= best.d) return;
+    let n = { x: ey, y: -ex };
+    const mid = { x: a.x + ex / 2, y: a.y + ey / 2 };
+    if (n.x * (mid.x - c.x) + n.y * (mid.y - c.y) < 0) n = { x: -n.x, y: -n.y };
+    best = { d, az: Math.round(bearing(n)) % 360 };
+  });
+  return best.az;
+}
 
 /** Only ever read from event handlers (undo grouping), never while rendering. */
 const clock = () => Date.now();
@@ -140,12 +192,19 @@ export function LayoutEditor({
   /** A selected inverter id, 'meter' or 'panelboard'; panels and equipment are never selected together */
   const [thing, setThing] = useState<string | null>(null);
   const [showKeys, setShowKeys] = useState(false);
+  /** Corners of the roof face being drawn */
+  const [draft, setDraft] = useState<LayoutPoint[] | null>(null);
+  const [hover, setHover] = useState<LayoutPoint | null>(null);
+  /** Waiting for a click on the selected face's eave */
+  const [eavePick, setEavePick] = useState(false);
+  const roofs = layout.roofs ?? [];
+  const selectedFace = thing?.startsWith('roof:') ? (roofs.find((f) => `roof:${f.id}` === thing) ?? null) : null;
   const [paint, setPaint] = useState<string | null>(layout.strings[0]?.id ?? null);
   const [arr, setArr] = useState({
     rows: '2',
     cols: '11',
     orientation: 'portrait' as Orientation,
-    rot: '0',
+    rot: 'auto',
     gap: '0.02',
     rowGap: '0.3',
   });
@@ -168,6 +227,7 @@ export function LayoutEditor({
         start: { x: number; y: number };
         orig: { x: number; y: number };
       }
+    | { kind: 'vertex'; faceId: string; index: number; start: LayoutPoint; orig: LayoutPoint }
     | null
   >(null);
 
@@ -213,7 +273,14 @@ export function LayoutEditor({
     lastEdit.current = null;
     setSelected((sel) => new Set([...sel].filter((id) => next.panels.some((p) => p.id === id))));
     setThing((th) =>
-      th && (th === 'meter' ? next.meter : th === 'panelboard' ? next.panelboard : next.inverters.some((i) => i.id === th))
+      th &&
+      (th.startsWith('roof:')
+        ? (next.roofs ?? []).some((f) => `roof:${f.id}` === th)
+        : th === 'meter'
+          ? next.meter
+          : th === 'panelboard'
+            ? next.panelboard
+            : next.inverters.some((i) => i.id === th))
         ? th
         : null,
     );
@@ -238,12 +305,60 @@ export function LayoutEditor({
     restore(next);
   }
 
+  /* ---------------- roof faces */
+
+  /** Changes a face, keeping the panels on it at their true spacing on the roof. */
+  function setFace(id: string, patch: Partial<RoofFace>, group?: string) {
+    const old = roofs.find((f) => f.id === id);
+    if (!old) return;
+    const next = { ...old, ...patch };
+    const nextRoofs = roofs.map((f) => (f.id === id ? next : f));
+    const reshaped = patch.pitchDeg !== undefined || patch.azimuthDeg !== undefined;
+    update({ roofs: nextRoofs, panels: reshaped ? refitFace(layout.panels, roofs, old, next) : layout.panels }, group);
+  }
+
+  function finishFace(points: LayoutPoint[]) {
+    setDraft(null);
+    setHover(null);
+    if (points.length < 3) return;
+    const id = [...ROOF_IDS].find((c) => !roofs.some((f) => f.id === c)) ?? `R${roofs.length + 1}`;
+    const face: RoofFace = { id, points, pitchDeg: 20, azimuthDeg: 180 };
+    const nextRoofs = [...roofs, face];
+    // Panels already there were laid flat; fold them onto the new face.
+    update({ roofs: nextRoofs, panels: refitFace(layout.panels, nextRoofs, { ...face, pitchDeg: 0 }, face) });
+    setThing(`roof:${id}`);
+    setSelected(new Set());
+    setTool('select');
+  }
+
+  function deleteFace(id: string) {
+    const face = roofs.find((f) => f.id === id);
+    if (!face) return;
+    // Unfold its panels back to flat before the face goes.
+    const panels = refitFace(layout.panels, roofs, face, { ...face, pitchDeg: 0 });
+    update({ roofs: roofs.filter((f) => f.id !== id), panels });
+    setThing(null);
+  }
+
   /* ---------------- canvas events */
 
   function onBackgroundDown(e: ReactPointerEvent<SVGSVGElement>) {
     const p = at(e);
     const L = layout;
+    if (eavePick && selectedFace) {
+      setFace(selectedFace.id, { azimuthDeg: outwardAcrossNearestEdge(selectedFace, p) });
+      setEavePick(false);
+      return;
+    }
+    if (tool === 'roof') {
+      if (e.detail >= 2 && draft && draft.length >= 3) finishFace(draft);
+      else setDraft((d) => [...(d ?? []), p]);
+      return;
+    }
     if (tool === 'array') {
+      const face = faceAt(L.roofs, p);
+      const typed = Number(arr.rot);
+      const rot = arr.rot.trim() !== '' && arr.rot !== 'auto' && Number.isFinite(typed) ? typed : face ? autoRotation(face) : 0;
       const prefix = nextId('a', [...new Set(L.panels.map((x) => x.rowId.split('-')[0]))]);
       const added = panelArray({
         panel,
@@ -252,10 +367,11 @@ export function LayoutEditor({
         rows: Math.max(1, Math.round(Number(arr.rows) || 1)),
         cols: Math.max(1, Math.round(Number(arr.cols) || 1)),
         orientation: arr.orientation,
-        rot: Number(arr.rot) || 0,
+        rot,
         gapM: Number(arr.gap) || 0,
         rowGapM: Number(arr.rowGap) || 0,
         idPrefix: prefix,
+        face,
       });
       update({ panels: [...L.panels, ...added] });
       setSelected(new Set(added.map((x) => x.id)));
@@ -291,6 +407,8 @@ export function LayoutEditor({
   }
 
   function onPanelDown(e: ReactPointerEvent<SVGGElement>, p: LayoutPanel) {
+    // Drawing a face, placing things or picking an eave: the click is for the canvas underneath.
+    if ((tool !== 'select' && tool !== 'string') || eavePick) return;
     e.stopPropagation();
     const L = layout;
     if (tool === 'string') {
@@ -334,7 +452,25 @@ export function LayoutEditor({
     svg.current?.setPointerCapture(e.pointerId);
   }
 
+  /** In Select, clicking a roof face selects it; dragging still pans. Other tools click straight through. */
+  function onFaceDown(e: ReactPointerEvent<SVGPolygonElement>, f: RoofFace) {
+    if (tool !== 'select' || eavePick) return;
+    e.stopPropagation();
+    setThing(`roof:${f.id}`);
+    setSelected(new Set());
+    drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, view };
+    svg.current?.setPointerCapture(e.pointerId);
+  }
+
+  function onVertexDown(e: ReactPointerEvent<SVGCircleElement>, f: RoofFace, index: number) {
+    e.stopPropagation();
+    gesture.current += 1;
+    drag.current = { kind: 'vertex', faceId: f.id, index, start: at(e), orig: f.points[index] };
+    svg.current?.setPointerCapture(e.pointerId);
+  }
+
   function onMove(e: ReactPointerEvent<SVGSVGElement>) {
+    if (tool === 'roof' && draft) setHover(at(e));
     const d = drag.current;
     if (!d) return;
     const L = layout;
@@ -355,7 +491,19 @@ export function LayoutEditor({
     // Ignore the jitter of a plain click, so selecting doesn't count as a move.
     if (Math.hypot(dx, dy) < 0.02) return;
     const group = `drag-${gesture.current}`;
-    if (d.kind === 'panels') {
+    if (d.kind === 'vertex') {
+      // Reshaping the outline leaves the panels where they are.
+      update(
+        {
+          roofs: roofs.map((f) =>
+            f.id === d.faceId
+              ? { ...f, points: f.points.map((v, i) => (i === d.index ? { x: d.orig.x + dx, y: d.orig.y + dy } : v)) }
+              : f,
+          ),
+        },
+        group,
+      );
+    } else if (d.kind === 'panels') {
       update(
         {
           panels: L.panels.map((x) =>
@@ -423,13 +571,19 @@ export function LayoutEditor({
 
   function nudge(dx: number, dy: number) {
     const move = <T extends { x: number; y: number }>(q: T): T => ({ ...q, x: q.x + dx, y: q.y + dy });
-    if (thing === 'meter' && layout.meter) update({ meter: move(layout.meter) }, 'nudge');
+    if (selectedFace)
+      update({ roofs: roofs.map((f) => (f.id === selectedFace.id ? { ...f, points: f.points.map(move) } : f)) }, 'nudge');
+    else if (thing === 'meter' && layout.meter) update({ meter: move(layout.meter) }, 'nudge');
     else if (thing === 'panelboard' && layout.panelboard) update({ panelboard: move(layout.panelboard) }, 'nudge');
     else if (thing) update({ inverters: layout.inverters.map((i) => (i.id === thing ? move(i) : i)) }, 'nudge');
     else if (selected.size) update({ panels: layout.panels.map((x) => (selected.has(x.id) ? move(x) : x)) }, 'nudge');
   }
 
   function deleteSelected() {
+    if (selectedFace) {
+      deleteFace(selectedFace.id);
+      return;
+    }
     if (thing) {
       if (thing === 'meter') update({ meter: null });
       else if (thing === 'panelboard') update({ panelboard: null });
@@ -485,7 +639,8 @@ export function LayoutEditor({
         setSelected(new Set(layout.panels.map((x) => x.id)));
         setThing(null);
         setTool('select');
-      } else if (mod && (key === 'c' || key === 'x') && !selected.size) handled = false; // leave text copying alone
+      } else if (mod && (key === 'c' || key === 'x') && !selected.size)
+        handled = false; // leave text copying alone
       else if (mod && key === 'c') copySelected();
       else if (mod && key === 'x') {
         copySelected();
@@ -495,8 +650,12 @@ export function LayoutEditor({
         copySelected();
         paste();
       } else if (mod) handled = false;
+      else if (key === 'enter' && draft) finishFace(draft);
       else if (key === 'delete' || key === 'backspace') deleteSelected();
       else if (key === 'escape') {
+        setDraft(null);
+        setHover(null);
+        setEavePick(false);
         setSelected(new Set());
         setThing(null);
         setMeasure(null);
@@ -512,11 +671,12 @@ export function LayoutEditor({
       else if (key === ']') rotateSelected(5);
       else {
         const pick = (
-          { v: 'select', a: 'array', s: 'string', i: 'inverter', m: 'meter', b: 'panelboard' } as Record<string, Tool>
+          { v: 'select', f: 'roof', a: 'array', s: 'string', i: 'inverter', m: 'meter', b: 'panelboard' } as Record<string, Tool>
         )[key];
         if (pick && !e.altKey) {
           setTool(pick);
           setMeasure(null);
+          setDraft(null);
         } else handled = false;
       }
       if (handled) e.preventDefault();
@@ -591,6 +751,8 @@ export function LayoutEditor({
             onPress={() => {
               setTool(x.tool);
               setMeasure(null);
+              setDraft(null);
+              setEavePick(false);
             }}
             style={[
               styles.tool,
@@ -633,7 +795,7 @@ export function LayoutEditor({
         <View style={styles.row}>
           <Field label="Rows" value={arr.rows} onChange={(v) => setArr({ ...arr, rows: v })} />
           <Field label="Columns" value={arr.cols} onChange={(v) => setArr({ ...arr, cols: v })} />
-          <Field label="Rotation °" value={arr.rot} onChange={(v) => setArr({ ...arr, rot: v })} />
+          <Field label="Rotation ° or auto" value={arr.rot} onChange={(v) => setArr({ ...arr, rot: v })} />
           <Field label="Gap m" value={arr.gap} onChange={(v) => setArr({ ...arr, gap: v })} />
           <Field label="Row gap m" value={arr.rowGap} onChange={(v) => setArr({ ...arr, rowGap: v })} />
           <SmallButton
@@ -648,7 +810,48 @@ export function LayoutEditor({
         </View>
       ) : null}
 
-      {tool === 'select' && thing ? (
+      {tool === 'select' && selectedFace ? (
+        <View style={[styles.panel, { borderColor: t.line }]}>
+          <View style={styles.row}>
+            <ThemedText type="smallBold">Roof {selectedFace.id}</ThemedText>
+            <Field
+              label="Pitch °"
+              value={String(selectedFace.pitchDeg)}
+              onChange={(v) => {
+                const n = Number(v);
+                if (v.trim() !== '' && Number.isFinite(n))
+                  setFace(selectedFace.id, { pitchDeg: Math.min(75, Math.max(0, n)) }, `face-pitch-${selectedFace.id}`);
+              }}
+            />
+            <View style={{ gap: 2 }}>
+              <ThemedText type="eyebrow" themeColor="textMuted" style={{ fontSize: 10 }}>
+                Slopes down to
+              </ThemedText>
+              <Choice
+                options={[
+                  ...FACINGS.map((d) => ({ value: String(d), label: `${compass(d)} (${d}°)` })),
+                  ...(FACINGS.includes(selectedFace.azimuthDeg)
+                    ? []
+                    : [{ value: String(selectedFace.azimuthDeg), label: `${selectedFace.azimuthDeg}°` }]),
+                ]}
+                value={String(selectedFace.azimuthDeg)}
+                onChange={(v) => setFace(selectedFace.id, { azimuthDeg: Number(v) })}
+              />
+            </View>
+            <SmallButton
+              label={eavePick ? 'Click the eave…' : 'Pick the eave'}
+              onPress={() => setEavePick((v) => !v)}
+              strong={eavePick}
+            />
+            <SmallButton label="Delete face" onPress={() => deleteFace(selectedFace.id)} />
+          </View>
+          <ThemedText type="small" themeColor="textMuted">
+            {`Rises ${Math.round(Math.tan((selectedFace.pitchDeg * Math.PI) / 180) * 100)} cm per metre. Panels on it are drawn as seen from above: ${Math.round(Math.cos((selectedFace.pitchDeg * Math.PI) / 180) * 100)}% of their length down the slope. Drag the corner dots to fit the outline to the roof; arrows move the whole face.`}
+          </ThemedText>
+        </View>
+      ) : null}
+
+      {tool === 'select' && thing && !selectedFace ? (
         <View style={styles.row}>
           <ThemedText type="small" themeColor="textSecondary">
             {thing === 'meter' ? 'Meter' : thing === 'panelboard' ? 'Panel board' : thing} selected · arrows move it, Delete
@@ -704,7 +907,7 @@ export function LayoutEditor({
             background: '#1b1f1c',
             borderRadius: Radius.md,
             touchAction: 'none',
-            cursor: tool === 'select' ? 'grab' : 'crosshair',
+            cursor: tool === 'select' && !eavePick ? 'grab' : 'crosshair',
             userSelect: 'none',
           }}>
           {tiles.map((tile) => (
@@ -728,6 +931,37 @@ export function LayoutEditor({
             strokeWidth={unit * 0.25}
             strokeDasharray={`${unit} ${unit}`}
           />
+
+          {roofs.map((f) => {
+            const sel = selectedFace?.id === f.id;
+            return (
+              <g key={`roof-${f.id}`}>
+                <polygon
+                  points={f.points.map((v) => `${v.x},${v.y}`).join(' ')}
+                  fill="#E7A93C"
+                  fillOpacity={sel ? 0.18 : 0.08}
+                  stroke={sel ? '#ffffff' : '#E7A93C'}
+                  strokeWidth={unit * (sel ? 0.3 : 0.2)}
+                  onPointerDown={(e) => onFaceDown(e, f)}
+                />
+              </g>
+            );
+          })}
+          {draft ? (
+            <g pointerEvents="none">
+              <polyline
+                points={[...draft, ...(hover ? [hover] : [])].map((v) => `${v.x},${v.y}`).join(' ')}
+                fill="#E7A93C"
+                fillOpacity={0.1}
+                stroke="#E7A93C"
+                strokeWidth={unit * 0.25}
+                strokeDasharray={`${unit * 0.8} ${unit * 0.5}`}
+              />
+              {draft.map((v, i) => (
+                <circle key={i} cx={v.x} cy={v.y} r={unit * 0.6} fill="#E7A93C" />
+              ))}
+            </g>
+          ) : null}
 
           {/* Home runs and the AC run, as the engine measures them: along x, then y */}
           {stringEnds.map((r) => (
@@ -758,33 +992,33 @@ export function LayoutEditor({
             const { w, h } = panelSize(panel, p.orientation);
             const color = stringColor(layout.strings, p.stringId);
             const order = p.stringId ? layout.panels.filter((x) => x.stringId === p.stringId).indexOf(p) + 1 : null;
+            // As seen from above: squashed down the slope of the face it sits on.
+            const m = projection(faceAt(roofs, p));
             return (
-              <g
-                key={p.id}
-                transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}
-                onPointerDown={(e) => onPanelDown(e, p)}
-                style={{ cursor: tool === 'string' ? 'copy' : 'move' }}>
-                <rect
-                  x={-w / 2}
-                  y={-h / 2}
-                  width={w}
-                  height={h}
-                  fill="#13233a"
-                  fillOpacity={0.85}
-                  stroke={selected.has(p.id) ? '#ffffff' : color}
-                  strokeWidth={selected.has(p.id) ? 0.08 : 0.05}
-                />
-                <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={color} strokeWidth={0.015} opacity={0.6} />
+              <g key={p.id} onPointerDown={(e) => onPanelDown(e, p)} style={{ cursor: tool === 'string' ? 'copy' : 'move' }}>
+                <g transform={`translate(${p.x} ${p.y}) matrix(${m.a} ${m.b} ${m.c} ${m.d} 0 0) rotate(${p.rot})`}>
+                  <rect
+                    x={-w / 2}
+                    y={-h / 2}
+                    width={w}
+                    height={h}
+                    fill="#13233a"
+                    fillOpacity={0.85}
+                    stroke={selected.has(p.id) ? '#ffffff' : color}
+                    strokeWidth={selected.has(p.id) ? 0.08 : 0.05}
+                  />
+                  <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={color} strokeWidth={0.015} opacity={0.6} />
+                </g>
                 {p.stringId ? (
                   <text
-                    x={0}
-                    y={0.12}
+                    x={p.x}
+                    y={p.y + 0.12}
                     textAnchor="middle"
                     fontSize={0.34}
                     fill={color}
                     fontFamily="sans-serif"
                     fontWeight="bold"
-                    transform={`rotate(${-p.rot})`}>
+                    pointerEvents="none">
                     {p.stringId}
                     {order}
                   </text>
@@ -793,6 +1027,60 @@ export function LayoutEditor({
             );
           })}
 
+          {/* Slope arrows and labels over the panels */}
+          {roofs.map((f) => {
+            const c = centroid(f.points);
+            const u = downslope(f);
+            const len = unit * 4;
+            return (
+              <g key={`roof-label-${f.id}`} pointerEvents="none">
+                <line
+                  x1={c.x - (u.x * len) / 2}
+                  y1={c.y - (u.y * len) / 2}
+                  x2={c.x + (u.x * len) / 2}
+                  y2={c.y + (u.y * len) / 2}
+                  stroke="#E7A93C"
+                  strokeWidth={unit * 0.3}
+                  pointerEvents="none"
+                />
+                <path
+                  d={`M ${c.x + (u.x * len) / 2} ${c.y + (u.y * len) / 2} l ${-u.x * unit * 1.2 - u.y * unit * 0.8} ${-u.y * unit * 1.2 + u.x * unit * 0.8} l ${u.y * unit * 1.6} ${-u.x * unit * 1.6} Z`}
+                  fill="#E7A93C"
+                  pointerEvents="none"
+                />
+                <text
+                  x={c.x - u.x * (len / 2 + unit * 1.8)}
+                  y={c.y - u.y * (len / 2 + unit * 1.8) + unit * 0.6}
+                  textAnchor="middle"
+                  fontSize={unit * 1.7}
+                  fill="#fff"
+                  stroke="#000"
+                  strokeWidth={unit * 0.08}
+                  paintOrder="stroke"
+                  fontFamily="sans-serif"
+                  fontWeight="bold"
+                  pointerEvents="none">
+                  {`${f.id} · ${f.pitchDeg}° · faces ${compass(f.azimuthDeg)}`}
+                </text>
+              </g>
+            );
+          })}
+          {/* Corner handles of the selected face, above everything so a corner under a panel can still be dragged */}
+          {selectedFace && tool === 'select'
+            ? selectedFace.points.map((v, i) => (
+                <circle
+                  key={`vertex-${i}`}
+                  cx={v.x}
+                  cy={v.y}
+                  r={unit * 0.7}
+                  fill="#fff"
+                  stroke="#000"
+                  strokeWidth={unit * 0.15}
+                  style={{ cursor: 'move' }}
+                  onPointerDown={(e) => onVertexDown(e, selectedFace, i)}
+                />
+              ))
+            : null}
           {layout.inverters.map((inv) => (
             <Marker
               key={inv.id}
