@@ -201,4 +201,24 @@ function ensure_schema(PDO $pdo): void {
             PRIMARY KEY (project_id, step)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         SQL);
+
+    // One PV design per project: the site on the map, the roof layout, and what it worked out to.
+    $pdo->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS designs (
+            project_id   INT UNSIGNED NOT NULL PRIMARY KEY,
+            job_id       INT UNSIGNED NULL,
+            -- Rectangle bounds, centre and zoom on the satellite map
+            site_json    TEXT         NOT NULL,
+            -- calculator/src/pvDesign.ts Layout and StringDef[], in metres
+            layout_json  LONGTEXT     NOT NULL,
+            -- Settings, overrides and the plan-set fields (title block, load schedule)
+            inputs_json  LONGTEXT     NOT NULL,
+            -- DesignResult as last shown, for lists and the print view
+            result_json  LONGTEXT     NOT NULL,
+            created_by   VARCHAR(64)  NOT NULL,
+            updated_by   VARCHAR(64)  NOT NULL,
+            created_at   DATETIME     NOT NULL,
+            updated_at   DATETIME     NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        SQL);
 }

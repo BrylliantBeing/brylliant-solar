@@ -324,6 +324,12 @@ export default function JobBuilder() {
               onPress={() => router.push({ pathname: '/internal/calendar', params: { job: String(saved.summary!.id) } })}
             />
           ) : null}
+          {saved?.summary ? (
+            <SmallButton
+              label="PV design"
+              onPress={() => router.push({ pathname: '/internal/design', params: { project: String(saved.summary!.projectId) } })}
+            />
+          ) : null}
           {draft.quoteId ? (
             <SmallButton label={`Quote #${draft.quoteId}`} onPress={() => router.push({ pathname: '/internal/quote', params: { id: String(draft.quoteId) } })} />
           ) : null}

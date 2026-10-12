@@ -25,7 +25,7 @@ import {
 } from '@/lib/projects-api';
 import { peso } from '@/lib/quote-input';
 import { addDays, dayLabel, installPlan, manilaDay, todayInManila, type EventKind } from '@/lib/schedule';
-import { ROLE_LABELS } from '@/lib/staff-session';
+import { ROLE_LABELS, useStaffSession } from '@/lib/staff-session';
 
 export type SidebarTab = 'surveys' | 'installs' | 'permits';
 
@@ -228,6 +228,7 @@ function ProjectCard({
   children?: ReactNode;
 }) {
   const t = useTheme();
+  const { user } = useStaffSession();
   const [editing, setEditing] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   /** Survey requests are turned down with a reason rather than closed. */
@@ -316,6 +317,9 @@ function ProjectCard({
             <View style={styles.buttons}>
               {onPlace ? <SmallButton label={placing ? 'Placing…' : 'Place on calendar'} onPress={onPlace} strong /> : null}
               {jobId ? <SmallButton label="Open job" onPress={() => router.push({ pathname: '/internal/job', params: { id: String(jobId) } })} /> : null}
+              {user?.role === 'owner' ? (
+                <SmallButton label="Design system" onPress={() => router.push({ pathname: '/internal/design', params: { project: String(p.id) } })} />
+              ) : null}
               <SmallButton label="Edit details" onPress={() => setEditing(true)} />
               {rejectable ? (
                 !rejecting ? <SmallButton label="Reject" onPress={() => setRejecting(true)} /> : null

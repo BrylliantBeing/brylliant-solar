@@ -24,6 +24,7 @@ const NAV: { label: string; href: Href; match: (path: string) => boolean; ownerO
     match: (p) => p === '/internal/jobs' || p.startsWith('/internal/job'),
     ownerOnly: true,
   },
+  { label: 'Design', href: '/internal/design', match: (p) => p.startsWith('/internal/design'), ownerOnly: true },
   { label: 'Status', href: '/internal/status', match: (p) => p.startsWith('/internal/status'), ownerOnly: true },
 ];
 
