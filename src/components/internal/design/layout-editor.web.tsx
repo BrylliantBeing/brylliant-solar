@@ -1,6 +1,6 @@
 import { autoAssign, panelArray, panelSize, type LayoutPanel, type Orientation, type StringDef } from '@calculator/pvDesign';
 import { INVERTERS, type PanelSpec } from '@calculator/pvDesignData';
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { stringColor, stringsForPattern, type DesignLayout } from './strings';
@@ -9,7 +9,7 @@ import { SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { siteBox, siteTiles } from '@/lib/design-geo';
+import { maxImageryZoom, metresPerPixel, siteBox, siteCenter, siteTiles } from '@/lib/design-geo';
 import type { DesignSite } from '@/lib/designs-api';
 
 type Tool = 'select' | 'array' | 'string' | 'inverter' | 'meter' | 'panelboard' | 'measure';
@@ -50,7 +50,18 @@ export function LayoutEditor({
   const t = useTheme();
   const svg = useRef<SVGSVGElement | null>(null);
   const box = useMemo(() => siteBox(site), [site]);
-  const tiles = useMemo(() => siteTiles(site), [site]);
+  const center = siteCenter(site);
+  /** Never ask for a zoom with no imagery: sites saved before this check carry z19, which Zamboanga lacks. */
+  const [nativeZ, setNativeZ] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    maxImageryZoom(center.lat, center.lng).then((z) => live && setNativeZ(z));
+    return () => {
+      live = false;
+    };
+  }, [center.lat, center.lng]);
+  const tileZoom = Math.min(site.zoom, nativeZ ?? 18);
+  const tiles = useMemo(() => siteTiles({ ...site, zoom: tileZoom }), [site, tileZoom]);
   const [view, setView] = useState(() => ({ x: box.x - 4, y: box.y - 4, w: box.w + 8, h: box.h + 8 }));
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -420,6 +431,10 @@ export function LayoutEditor({
           </text>
         </g>
       </svg>
+
+      <ThemedText type="small" themeColor="textMuted">
+        {`Imagery: zoom ${tileZoom}, about ${metresPerPixel(center.lat, tileZoom).toFixed(2)} m per pixel. Panels are drawn at true size; trust their outline over the photo's edges.`}
+      </ThemedText>
 
       {/* Strings */}
       <View style={[styles.panel, { borderColor: t.line }]}>

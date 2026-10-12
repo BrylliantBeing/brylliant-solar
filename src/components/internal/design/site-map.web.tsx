@@ -8,7 +8,7 @@ import { SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { ESRI_ATTRIBUTION, ESRI_IMAGERY, geocode, type GeocodeHit } from '@/lib/design-geo';
+import { ESRI_ATTRIBUTION, ESRI_IMAGERY, geocode, maxImageryZoom, metresPerPixel, type GeocodeHit } from '@/lib/design-geo';
 import type { DesignSite } from '@/lib/designs-api';
 
 /** Zamboanga City, for a project with no address yet. */
@@ -38,6 +38,8 @@ export function SiteMap({
   const [hits, setHits] = useState<GeocodeHit[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  /** Deepest zoom with real imagery under the map's centre */
+  const [native, setNative] = useState<{ z: number; lat: number } | null>(null);
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -51,7 +53,20 @@ export function SiteMap({
       const lib = (mod as unknown as { default?: typeof Leaflet }).default ?? (mod as typeof Leaflet);
       L.current = lib;
       const m = lib.map(box.current, { zoomControl: true, maxZoom: 21 });
-      lib.tileLayer(ESRI_IMAGERY, { attribution: ESRI_ATTRIBUTION, maxNativeZoom: 19, maxZoom: 21 }).addTo(m);
+      // Past the deepest real imagery Leaflet enlarges that level instead of fetching "no data" tiles.
+      const layer = lib.tileLayer(ESRI_IMAGERY, { attribution: ESRI_ATTRIBUTION, maxNativeZoom: 18, maxZoom: 21 }).addTo(m);
+      const probe = () => {
+        const c = m.getCenter();
+        maxImageryZoom(c.lat, c.lng).then((z) => {
+          if (!live) return;
+          setNative({ z, lat: c.lat });
+          if (layer.options.maxNativeZoom !== z) {
+            layer.options.maxNativeZoom = z;
+            layer.redraw();
+          }
+        });
+      };
+      m.on('moveend', probe);
       if (site) {
         m.fitBounds([
           [site.south, site.west],
@@ -62,6 +77,7 @@ export function SiteMap({
       }
       map.current = m;
       drawRect(site);
+      probe();
     });
     return () => {
       live = false;
@@ -106,14 +122,18 @@ export function SiteMap({
       start = null;
       setDrawing(false);
       if (b.getNorth() === b.getSouth() || b.getEast() === b.getWest()) return;
-      onChangeRef.current({
-        south: b.getSouth(),
-        west: b.getWest(),
-        north: b.getNorth(),
-        east: b.getEast(),
-        zoom: Math.min(20, Math.max(18, Math.round(m.getZoom()))),
-        scale: site?.scale ?? 1,
-      });
+      // The layout's background uses the sharpest imagery that exists at the site.
+      const c = b.getCenter();
+      maxImageryZoom(c.lat, c.lng).then((zoom) =>
+        onChangeRef.current({
+          south: b.getSouth(),
+          west: b.getWest(),
+          north: b.getNorth(),
+          east: b.getEast(),
+          zoom,
+          scale: site?.scale ?? 1,
+        }),
+      );
     };
     m.on('mousedown', down);
     m.on('mousemove', move);
@@ -188,6 +208,11 @@ export function SiteMap({
         </View>
       ) : null}
       <div ref={box} style={{ height: 520, borderRadius: Radius.md, overflow: 'hidden', border: `1px solid ${t.line}` }} />
+      {native ? (
+        <ThemedText type="small" themeColor="textMuted">
+          {`Sharpest imagery here: zoom ${native.z}, about ${metresPerPixel(native.lat, native.z).toFixed(2)} m per pixel. Zooming in past that enlarges the same photo.`}
+        </ThemedText>
+      ) : null}
       <ThemedText type="small" themeColor="textMuted">
         Zoom in until the roof fills the screen, press Draw rectangle, then drag from one corner of the property to the
         other. Leave a few metres around the roof so the meter and inverter fit inside.

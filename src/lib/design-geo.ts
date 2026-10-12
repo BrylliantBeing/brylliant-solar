@@ -92,6 +92,41 @@ export function tilesAround(lat: number, lng: number, z: number, n = 3, template
   return { tiles, px: cx - x0, py: cy - y0 };
 }
 
+/** Ground metres per pixel of a 256-px tile at this zoom and latitude. */
+export const metresPerPixel = (lat: number, z: number) => (156_543.03 * Math.cos((lat * Math.PI) / 180)) / 2 ** z;
+
+const imageryZoomCache = new Map<string, Promise<number>>();
+
+/**
+ * The deepest zoom with real Esri imagery at a point. Past it Esri still
+ * answers, but with a grey "Map data not yet available" tile; over Zamboanga
+ * that starts at z19, so asking for z19 blindly shows nothing. Esri's tilemap
+ * endpoint says per tile whether imagery exists ({"data":[1]}).
+ */
+export function maxImageryZoom(lat: number, lng: number, from = 21, floor = 15): Promise<number> {
+  const key = `${tileX(lng, 14) | 0},${tileY(lat, 14) | 0}`;
+  let hit = imageryZoomCache.get(key);
+  if (!hit) {
+    hit = (async () => {
+      for (let z = from; z > floor; z -= 1) {
+        const x = Math.floor(tileX(lng, z));
+        const y = Math.floor(tileY(lat, z));
+        try {
+          const res = await fetch(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tilemap/${z}/${y}/${x}/1/1`);
+          const body = (await res.json()) as { data?: number[] };
+          if (body.data?.[0] === 1) return z;
+        } catch {
+          // Unreachable: assume z18, the depth Esri has across Zamboanga.
+          return 18;
+        }
+      }
+      return floor;
+    })();
+    imageryZoomCache.set(key, hit);
+  }
+  return hit;
+}
+
 export type GeocodeHit = { label: string; lat: number; lng: number };
 
 /** OpenStreetMap Nominatim search, Philippines only. Their policy: at most one request a second. */
