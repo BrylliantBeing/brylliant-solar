@@ -8,7 +8,9 @@ import { SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { ESRI_ATTRIBUTION, ESRI_IMAGERY, geocode, maxImageryZoom, metresPerPixel, type GeocodeHit } from '@/lib/design-geo';
+import { ImageryCredit } from '@/components/internal/design/imagery-credit';
+import { geocode, metresPerPixel, type GeocodeHit } from '@/lib/design-geo';
+import { loadImagery, type Imagery } from '@/lib/imagery';
 import type { DesignSite } from '@/lib/designs-api';
 
 /** Zamboanga City, for a project with no address yet. */
@@ -40,6 +42,12 @@ export function SiteMap({
   const [searching, setSearching] = useState(false);
   /** Deepest zoom with real imagery under the map's centre */
   const [native, setNative] = useState<{ z: number; lat: number } | null>(null);
+  const imagery = useRef<Imagery | null>(null);
+  const [credit, setCredit] = useState<{
+    provider: Imagery['provider'];
+    text: string;
+    note: string | null;
+  } | null>(null);
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -48,16 +56,23 @@ export function SiteMap({
   // Create the map once.
   useEffect(() => {
     let live = true;
-    import('leaflet').then((mod) => {
+    Promise.all([import('leaflet'), loadImagery()]).then(([mod, img]) => {
       if (!live || !box.current || map.current) return;
       const lib = (mod as unknown as { default?: typeof Leaflet }).default ?? (mod as typeof Leaflet);
       L.current = lib;
-      const m = lib.map(box.current, { zoomControl: true, maxZoom: 21 });
+      imagery.current = img;
+      // Attribution is drawn by ImageryCredit, which also carries Google's logo.
+      const m = lib.map(box.current, {
+        zoomControl: true,
+        maxZoom: 22,
+        attributionControl: false,
+      });
       // Past the deepest real imagery Leaflet enlarges that level instead of fetching "no data" tiles.
-      const layer = lib.tileLayer(ESRI_IMAGERY, { attribution: ESRI_ATTRIBUTION, maxNativeZoom: 18, maxZoom: 21 }).addTo(m);
+      const layer = lib.tileLayer(img.template, { maxNativeZoom: 18, maxZoom: 22 }).addTo(m);
       const probe = () => {
         const c = m.getCenter();
-        maxImageryZoom(c.lat, c.lng).then((z) => {
+        const b = m.getBounds();
+        img.maxZoom(c.lat, c.lng).then((z) => {
           if (!live) return;
           setNative({ z, lat: c.lat });
           if (layer.options.maxNativeZoom !== z) {
@@ -65,13 +80,27 @@ export function SiteMap({
             layer.redraw();
           }
         });
+        img
+          .copyright(
+            {
+              north: b.getNorth(),
+              south: b.getSouth(),
+              east: b.getEast(),
+              west: b.getWest(),
+            },
+            Math.min(m.getZoom(), 22),
+          )
+          .then((text) => live && setCredit({ provider: img.provider, text, note: img.note }));
       };
       m.on('moveend', probe);
       if (site) {
-        m.fitBounds([
-          [site.south, site.west],
-          [site.north, site.east],
-        ], { padding: [40, 40] });
+        m.fitBounds(
+          [
+            [site.south, site.west],
+            [site.north, site.east],
+          ],
+          { padding: [40, 40] },
+        );
       } else {
         m.setView([START.lat, START.lng], START.zoom);
       }
@@ -93,10 +122,15 @@ export function SiteMap({
     if (!lib || !m) return;
     rect.current?.remove();
     rect.current = s
-      ? lib.rectangle([
-          [s.south, s.west],
-          [s.north, s.east],
-        ], { color: '#E7A93C', weight: 2, fillOpacity: 0.08 }).addTo(m)
+      ? lib
+          .rectangle(
+            [
+              [s.south, s.west],
+              [s.north, s.east],
+            ],
+            { color: '#E7A93C', weight: 2, fillOpacity: 0.08 },
+          )
+          .addTo(m)
       : null;
   }
 
@@ -114,7 +148,14 @@ export function SiteMap({
     const move = (e: Leaflet.LeafletMouseEvent) => {
       if (!start) return;
       const b = lib.latLngBounds(start, e.latlng);
-      drawRect({ south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast(), zoom: 19, scale: 1 });
+      drawRect({
+        south: b.getSouth(),
+        west: b.getWest(),
+        north: b.getNorth(),
+        east: b.getEast(),
+        zoom: 19,
+        scale: 1,
+      });
     };
     const up = (e: Leaflet.LeafletMouseEvent) => {
       if (!start) return;
@@ -124,7 +165,7 @@ export function SiteMap({
       if (b.getNorth() === b.getSouth() || b.getEast() === b.getWest()) return;
       // The layout's background uses the sharpest imagery that exists at the site.
       const c = b.getCenter();
-      maxImageryZoom(c.lat, c.lng).then((zoom) =>
+      (imagery.current?.maxZoom(c.lat, c.lng) ?? Promise.resolve(18)).then((zoom) =>
         onChangeRef.current({
           south: b.getSouth(),
           west: b.getWest(),
@@ -182,7 +223,14 @@ export function SiteMap({
           onSubmitEditing={search}
           placeholder="Search an address, barangay or landmark"
           placeholderTextColor={t.textMuted}
-          style={[styles.input, { borderColor: t.lineStrong, color: t.text, backgroundColor: t.background }]}
+          style={[
+            styles.input,
+            {
+              borderColor: t.lineStrong,
+              color: t.text,
+              backgroundColor: t.background,
+            },
+          ]}
         />
         <SmallButton label={searching ? 'Searching…' : 'Search'} onPress={search} />
         <SmallButton
@@ -207,23 +255,51 @@ export function SiteMap({
           ))}
         </View>
       ) : null}
-      <div ref={box} style={{ height: 520, borderRadius: Radius.md, overflow: 'hidden', border: `1px solid ${t.line}` }} />
+      <View style={{ position: 'relative' }}>
+        <div
+          ref={box}
+          style={{
+            height: 520,
+            borderRadius: Radius.md,
+            overflow: 'hidden',
+            border: `1px solid ${t.line}`,
+          }}
+        />
+        {credit ? <ImageryCredit provider={credit.provider} text={credit.text} /> : null}
+      </View>
+      {credit?.note ? (
+        <ThemedText type="small" themeColor="accentWarm">
+          {credit.note}
+        </ThemedText>
+      ) : null}
       {native ? (
         <ThemedText type="small" themeColor="textMuted">
-          {`Sharpest imagery here: zoom ${native.z}, about ${metresPerPixel(native.lat, native.z).toFixed(2)} m per pixel. Zooming in past that enlarges the same photo.`}
+          {`${credit?.provider === 'google' ? 'Google' : 'Esri'} imagery. Sharpest here: zoom ${native.z}, about ${metresPerPixel(native.lat, native.z).toFixed(2)} m per pixel. Zooming in past that enlarges the same photo.`}
         </ThemedText>
       ) : null}
       <ThemedText type="small" themeColor="textMuted">
-        Zoom in until the roof fills the screen, press Draw rectangle, then drag from one corner of the property to the
-        other. Leave a few metres around the roof so the meter and inverter fit inside.
+        Zoom in until the roof fills the screen, press Draw rectangle, then drag from one corner of the property to the other.
+        Leave a few metres around the roof so the meter and inverter fit inside.
       </ThemedText>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two },
-  input: { flexGrow: 1, minWidth: 240, borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.three, paddingVertical: Spacing.two },
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  input: {
+    flexGrow: 1,
+    minWidth: 240,
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
   hits: { borderWidth: 1, borderRadius: Radius.sm },
   hit: { paddingHorizontal: Spacing.three, paddingVertical: Spacing.two },
 });

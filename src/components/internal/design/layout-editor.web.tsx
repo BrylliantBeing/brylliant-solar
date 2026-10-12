@@ -3,25 +3,55 @@ import { INVERTERS, type PanelSpec } from '@calculator/pvDesignData';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
+import { ImageryCredit } from './imagery-credit';
 import { stringColor, stringsForPattern, type DesignLayout } from './strings';
 
 import { SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { maxImageryZoom, metresPerPixel, siteBox, siteCenter, siteTiles } from '@/lib/design-geo';
+import { metresPerPixel, siteBox, siteCenter, siteTiles } from '@/lib/design-geo';
+import { loadImagery, type Imagery } from '@/lib/imagery';
 import type { DesignSite } from '@/lib/designs-api';
 
 type Tool = 'select' | 'array' | 'string' | 'inverter' | 'meter' | 'panelboard' | 'measure';
 
 const TOOLS: { tool: Tool; label: string; hint: string }[] = [
-  { tool: 'select', label: 'Select / move', hint: 'Click a panel to select it, shift-click to add, double-click for its whole array. Drag to move; drag empty space to pan; scroll to zoom.' },
-  { tool: 'array', label: 'Add panels', hint: 'Set rows, columns and rotation below, then click where the middle of the array goes.' },
-  { tool: 'string', label: 'Paint string', hint: 'Pick a string below, then click panels in wiring order. The first and last panel are where the home runs land.' },
-  { tool: 'inverter', label: 'Inverter', hint: 'Click where the inverter is mounted.' },
-  { tool: 'meter', label: 'ZAMCELCO meter', hint: 'Click where the bi-directional meter is (or will be).' },
-  { tool: 'panelboard', label: 'Panel board', hint: 'Click the existing panel board, where the PV breaker lands.' },
-  { tool: 'measure', label: 'Calibrate', hint: 'Click both ends of something you know the length of (a wall, a gate); then type its real length.' },
+  {
+    tool: 'select',
+    label: 'Select / move',
+    hint: 'Click a panel to select it, shift-click to add, double-click for its whole array. Drag to move; drag empty space to pan; scroll to zoom.',
+  },
+  {
+    tool: 'array',
+    label: 'Add panels',
+    hint: 'Set rows, columns and rotation below, then click where the middle of the array goes.',
+  },
+  {
+    tool: 'string',
+    label: 'Paint string',
+    hint: 'Pick a string below, then click panels in wiring order. The first and last panel are where the home runs land.',
+  },
+  {
+    tool: 'inverter',
+    label: 'Inverter',
+    hint: 'Click where the inverter is mounted.',
+  },
+  {
+    tool: 'meter',
+    label: 'ZAMCELCO meter',
+    hint: 'Click where the bi-directional meter is (or will be).',
+  },
+  {
+    tool: 'panelboard',
+    label: 'Panel board',
+    hint: 'Click the existing panel board, where the PV breaker lands.',
+  },
+  {
+    tool: 'measure',
+    label: 'Calibrate',
+    hint: 'Click both ends of something you know the length of (a wall, a gate); then type its real length.',
+  },
 ];
 
 const nextId = (prefix: string, taken: string[]) => {
@@ -51,29 +81,72 @@ export function LayoutEditor({
   const svg = useRef<SVGSVGElement | null>(null);
   const box = useMemo(() => siteBox(site), [site]);
   const center = siteCenter(site);
-  /** Never ask for a zoom with no imagery: sites saved before this check carry z19, which Zamboanga lacks. */
-  const [nativeZ, setNativeZ] = useState<number | null>(null);
+  /**
+   * The provider's deepest real imagery at the site, not site.zoom: that was
+   * fixed when the rectangle was drawn, possibly under another provider.
+   */
+  const [bg, setBg] = useState<{
+    imagery: Imagery;
+    zoom: number;
+    credit: string;
+  } | null>(null);
   useEffect(() => {
     let live = true;
-    maxImageryZoom(center.lat, center.lng).then((z) => live && setNativeZ(z));
+    loadImagery().then(async (imagery) => {
+      const zoom = await imagery.maxZoom(center.lat, center.lng);
+      const credit = await imagery.copyright(
+        {
+          north: site.north,
+          south: site.south,
+          east: site.east,
+          west: site.west,
+        },
+        zoom,
+      );
+      if (live) setBg({ imagery, zoom, credit });
+    });
     return () => {
       live = false;
     };
-  }, [center.lat, center.lng]);
-  const tileZoom = Math.min(site.zoom, nativeZ ?? 18);
-  const tiles = useMemo(() => siteTiles({ ...site, zoom: tileZoom }), [site, tileZoom]);
-  const [view, setView] = useState(() => ({ x: box.x - 4, y: box.y - 4, w: box.w + 8, h: box.h + 8 }));
+  }, [center.lat, center.lng, site.north, site.south, site.east, site.west]);
+  const tileZoom = bg?.zoom ?? 18;
+  const tiles = useMemo(() => (bg ? siteTiles({ ...site, zoom: bg.zoom }, bg.imagery.template) : []), [site, bg]);
+  const [view, setView] = useState(() => ({
+    x: box.x - 4,
+    y: box.y - 4,
+    w: box.w + 8,
+    h: box.h + 8,
+  }));
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [paint, setPaint] = useState<string | null>(layout.strings[0]?.id ?? null);
-  const [arr, setArr] = useState({ rows: '2', cols: '11', orientation: 'portrait' as Orientation, rot: '0', gap: '0.02', rowGap: '0.3' });
+  const [arr, setArr] = useState({
+    rows: '2',
+    cols: '11',
+    orientation: 'portrait' as Orientation,
+    rot: '0',
+    gap: '0.02',
+    rowGap: '0.3',
+  });
   const [patternText, setPatternText] = useState(pattern.join(', '));
-  const [measure, setMeasure] = useState<{ a: { x: number; y: number }; b?: { x: number; y: number } } | null>(null);
+  const [measure, setMeasure] = useState<{
+    a: { x: number; y: number };
+    b?: { x: number; y: number };
+  } | null>(null);
   const [realLength, setRealLength] = useState('');
   const drag = useRef<
     | { kind: 'pan'; sx: number; sy: number; view: typeof view }
-    | { kind: 'panels'; start: { x: number; y: number }; orig: Map<string, { x: number; y: number }> }
-    | { kind: 'thing'; what: 'meter' | 'panelboard' | string; start: { x: number; y: number }; orig: { x: number; y: number } }
+    | {
+        kind: 'panels';
+        start: { x: number; y: number };
+        orig: Map<string, { x: number; y: number }>;
+      }
+    | {
+        kind: 'thing';
+        what: 'meter' | 'panelboard' | string;
+        start: { x: number; y: number };
+        orig: { x: number; y: number };
+      }
     | null
   >(null);
 
@@ -113,8 +186,13 @@ export function LayoutEditor({
       return;
     }
     if (tool === 'inverter') {
-      const id = nextId('INV', L.inverters.map((i) => i.id));
-      update({ inverters: [...L.inverters, { id, model: INVERTERS[0].model, x: p.x, y: p.y, floor: 1 }] });
+      const id = nextId(
+        'INV',
+        L.inverters.map((i) => i.id),
+      );
+      update({
+        inverters: [...L.inverters, { id, model: INVERTERS[0].model, x: p.x, y: p.y, floor: 1 }],
+      });
       setTool('select');
       return;
     }
@@ -181,18 +259,26 @@ export function LayoutEditor({
       const el = svg.current;
       if (!el) return;
       const k = d.view.w / el.clientWidth;
-      setView({ ...d.view, x: d.view.x - (e.clientX - d.sx) * k, y: d.view.y - (e.clientY - d.sy) * k });
+      setView({
+        ...d.view,
+        x: d.view.x - (e.clientX - d.sx) * k,
+        y: d.view.y - (e.clientY - d.sy) * k,
+      });
       return;
     }
     const p = at(e);
     const dx = p.x - d.start.x;
     const dy = p.y - d.start.y;
     if (d.kind === 'panels') {
-      update({ panels: L.panels.map((x) => (d.orig.has(x.id) ? { ...x, x: d.orig.get(x.id)!.x + dx, y: d.orig.get(x.id)!.y + dy } : x)) });
+      update({
+        panels: L.panels.map((x) => (d.orig.has(x.id) ? { ...x, x: d.orig.get(x.id)!.x + dx, y: d.orig.get(x.id)!.y + dy } : x)),
+      });
     } else if (d.what === 'meter' || d.what === 'panelboard') {
       update({ [d.what]: { x: d.orig.x + dx, y: d.orig.y + dy } });
     } else {
-      update({ inverters: L.inverters.map((i) => (i.id === d.what ? { ...i, x: d.orig.x + dx, y: d.orig.y + dy } : i)) });
+      update({
+        inverters: L.inverters.map((i) => (i.id === d.what ? { ...i, x: d.orig.x + dx, y: d.orig.y + dy } : i)),
+      });
     }
   }
 
@@ -207,7 +293,12 @@ export function LayoutEditor({
     setView((v) => {
       const w = Math.min(Math.max(v.w * k, 3), 400);
       const s = w / v.w;
-      return { x: p.x - (p.x - v.x) * s, y: p.y - (p.y - v.y) * s, w, h: v.h * s };
+      return {
+        x: p.x - (p.x - v.x) * s,
+        y: p.y - (p.y - v.y) * s,
+        w,
+        h: v.h * s,
+      };
     });
   }
 
@@ -225,14 +316,21 @@ export function LayoutEditor({
     update({
       panels: L.panels.map((x) =>
         selected.has(x.id)
-          ? { ...x, x: cx + (x.x - cx) * cos - (x.y - cy) * sin, y: cy + (x.x - cx) * sin + (x.y - cy) * cos, rot: (x.rot + deg + 360) % 360 }
+          ? {
+              ...x,
+              x: cx + (x.x - cx) * cos - (x.y - cy) * sin,
+              y: cy + (x.x - cx) * sin + (x.y - cy) * cos,
+              rot: (x.rot + deg + 360) % 360,
+            }
           : x,
       ),
     });
   }
 
   function nudge(dx: number, dy: number) {
-    update({ panels: layout.panels.map((x) => (selected.has(x.id) ? { ...x, x: x.x + dx, y: x.y + dy } : x)) });
+    update({
+      panels: layout.panels.map((x) => (selected.has(x.id) ? { ...x, x: x.x + dx, y: x.y + dy } : x)),
+    });
   }
 
   function deleteSelected() {
@@ -248,12 +346,21 @@ export function LayoutEditor({
     const L = layout;
     const strings = stringsForPattern(nums, L.inverters);
     onPatternChange(nums);
-    onChange({ ...L, strings, panels: autoAssign(L.panels, strings.map((s, i) => ({ id: s.id, size: nums[i] }))) });
+    onChange({
+      ...L,
+      strings,
+      panels: autoAssign(
+        L.panels,
+        strings.map((s, i) => ({ id: s.id, size: nums[i] })),
+      ),
+    });
     setPaint(strings[0]?.id ?? null);
   }
 
   function setStringMppt(id: string, patch: Partial<StringDef>) {
-    update({ strings: layout.strings.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
+    update({
+      strings: layout.strings.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    });
   }
 
   const measured = measure?.b ? Math.hypot(measure.b.x - measure.a.x, measure.b.y - measure.a.y) : null;
@@ -277,7 +384,12 @@ export function LayoutEditor({
     const members = layout.panels.filter((p) => p.stringId === s.id);
     const inv = layout.inverters.find((i) => i.id === s.inverterId);
     if (!members.length || !inv) return [];
-    return [members[0], members[members.length - 1]].map((p, k) => ({ key: `${s.id}-${k}`, from: inv, to: p, color: stringColor(layout.strings, s.id) }));
+    return [members[0], members[members.length - 1]].map((p, k) => ({
+      key: `${s.id}-${k}`,
+      from: inv,
+      to: p,
+      color: stringColor(layout.strings, s.id),
+    }));
   });
 
   return (
@@ -290,7 +402,13 @@ export function LayoutEditor({
               setTool(x.tool);
               setMeasure(null);
             }}
-            style={[styles.tool, { borderColor: tool === x.tool ? t.accent : t.lineStrong, backgroundColor: tool === x.tool ? t.backgroundSelected : t.background }]}>
+            style={[
+              styles.tool,
+              {
+                borderColor: tool === x.tool ? t.accent : t.lineStrong,
+                backgroundColor: tool === x.tool ? t.backgroundSelected : t.background,
+              },
+            ]}>
             <ThemedText type="small" themeColor={tool === x.tool ? 'text' : 'textSecondary'}>
               {x.label}
             </ThemedText>
@@ -312,7 +430,12 @@ export function LayoutEditor({
           <Field label="Row gap m" value={arr.rowGap} onChange={(v) => setArr({ ...arr, rowGap: v })} />
           <SmallButton
             label={arr.orientation === 'portrait' ? 'Portrait' : 'Landscape'}
-            onPress={() => setArr({ ...arr, orientation: arr.orientation === 'portrait' ? 'landscape' : 'portrait' })}
+            onPress={() =>
+              setArr({
+                ...arr,
+                orientation: arr.orientation === 'portrait' ? 'landscape' : 'portrait',
+              })
+            }
           />
         </View>
       ) : null}
@@ -348,92 +471,193 @@ export function LayoutEditor({
         </View>
       ) : null}
 
-      <svg
-        ref={svg}
-        viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
-        preserveAspectRatio="xMidYMid meet"
-        onPointerDown={onBackgroundDown}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onWheel={onWheel}
-        style={{
-          width: '100%',
-          height: 600,
-          background: '#1b1f1c',
-          borderRadius: Radius.md,
-          touchAction: 'none',
-          cursor: tool === 'select' ? 'grab' : 'crosshair',
-          userSelect: 'none',
-        }}>
-        {tiles.map((tile) => (
-          <image key={tile.url} href={tile.url} x={tile.x} y={tile.y} width={tile.w} height={tile.h} preserveAspectRatio="none" />
-        ))}
-        <rect x={box.x} y={box.y} width={box.w} height={box.h} fill="none" stroke="#E7A93C" strokeWidth={unit * 0.25} strokeDasharray={`${unit} ${unit}`} />
+      <View style={{ position: 'relative' }}>
+        <svg
+          ref={svg}
+          viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
+          preserveAspectRatio="xMidYMid meet"
+          onPointerDown={onBackgroundDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onWheel={onWheel}
+          style={{
+            width: '100%',
+            height: 600,
+            background: '#1b1f1c',
+            borderRadius: Radius.md,
+            touchAction: 'none',
+            cursor: tool === 'select' ? 'grab' : 'crosshair',
+            userSelect: 'none',
+          }}>
+          {tiles.map((tile) => (
+            <image
+              key={tile.url}
+              href={tile.url}
+              x={tile.x}
+              y={tile.y}
+              width={tile.w}
+              height={tile.h}
+              preserveAspectRatio="none"
+            />
+          ))}
+          <rect
+            x={box.x}
+            y={box.y}
+            width={box.w}
+            height={box.h}
+            fill="none"
+            stroke="#E7A93C"
+            strokeWidth={unit * 0.25}
+            strokeDasharray={`${unit} ${unit}`}
+          />
 
-        {/* Home runs and the AC run, as the engine measures them: along x, then y */}
-        {stringEnds.map((r) => (
-          <polyline key={r.key} points={`${r.from.x},${r.from.y} ${r.to.x},${r.from.y} ${r.to.x},${r.to.y}`} fill="none" stroke={r.color} strokeWidth={unit * 0.2} strokeDasharray={`${unit * 0.6} ${unit * 0.4}`} opacity={0.9} />
-        ))}
-        {acEnd
-          ? layout.inverters.map((inv) => (
-              <polyline key={`ac-${inv.id}`} points={`${inv.x},${inv.y} ${acEnd.x},${inv.y} ${acEnd.x},${acEnd.y}`} fill="none" stroke="#ffffff" strokeWidth={unit * 0.25} opacity={0.8} />
-            ))
-          : null}
+          {/* Home runs and the AC run, as the engine measures them: along x, then y */}
+          {stringEnds.map((r) => (
+            <polyline
+              key={r.key}
+              points={`${r.from.x},${r.from.y} ${r.to.x},${r.from.y} ${r.to.x},${r.to.y}`}
+              fill="none"
+              stroke={r.color}
+              strokeWidth={unit * 0.2}
+              strokeDasharray={`${unit * 0.6} ${unit * 0.4}`}
+              opacity={0.9}
+            />
+          ))}
+          {acEnd
+            ? layout.inverters.map((inv) => (
+                <polyline
+                  key={`ac-${inv.id}`}
+                  points={`${inv.x},${inv.y} ${acEnd.x},${inv.y} ${acEnd.x},${acEnd.y}`}
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth={unit * 0.25}
+                  opacity={0.8}
+                />
+              ))
+            : null}
 
-        {layout.panels.map((p) => {
-          const { w, h } = panelSize(panel, p.orientation);
-          const color = stringColor(layout.strings, p.stringId);
-          const order = p.stringId ? layout.panels.filter((x) => x.stringId === p.stringId).indexOf(p) + 1 : null;
-          return (
-            <g key={p.id} transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`} onPointerDown={(e) => onPanelDown(e, p)} style={{ cursor: tool === 'string' ? 'copy' : 'move' }}>
-              <rect x={-w / 2} y={-h / 2} width={w} height={h} fill="#13233a" fillOpacity={0.85} stroke={selected.has(p.id) ? '#ffffff' : color} strokeWidth={selected.has(p.id) ? 0.08 : 0.05} />
-              <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={color} strokeWidth={0.015} opacity={0.6} />
-              {p.stringId ? (
-                <text x={0} y={0.12} textAnchor="middle" fontSize={0.34} fill={color} fontFamily="sans-serif" fontWeight="bold" transform={`rotate(${-p.rot})`}>
-                  {p.stringId}
-                  {order}
-                </text>
+          {layout.panels.map((p) => {
+            const { w, h } = panelSize(panel, p.orientation);
+            const color = stringColor(layout.strings, p.stringId);
+            const order = p.stringId ? layout.panels.filter((x) => x.stringId === p.stringId).indexOf(p) + 1 : null;
+            return (
+              <g
+                key={p.id}
+                transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}
+                onPointerDown={(e) => onPanelDown(e, p)}
+                style={{ cursor: tool === 'string' ? 'copy' : 'move' }}>
+                <rect
+                  x={-w / 2}
+                  y={-h / 2}
+                  width={w}
+                  height={h}
+                  fill="#13233a"
+                  fillOpacity={0.85}
+                  stroke={selected.has(p.id) ? '#ffffff' : color}
+                  strokeWidth={selected.has(p.id) ? 0.08 : 0.05}
+                />
+                <line x1={-w / 2} y1={0} x2={w / 2} y2={0} stroke={color} strokeWidth={0.015} opacity={0.6} />
+                {p.stringId ? (
+                  <text
+                    x={0}
+                    y={0.12}
+                    textAnchor="middle"
+                    fontSize={0.34}
+                    fill={color}
+                    fontFamily="sans-serif"
+                    fontWeight="bold"
+                    transform={`rotate(${-p.rot})`}>
+                    {p.stringId}
+                    {order}
+                  </text>
+                ) : null}
+              </g>
+            );
+          })}
+
+          {layout.inverters.map((inv) => (
+            <Marker
+              key={inv.id}
+              x={inv.x}
+              y={inv.y}
+              size={unit * 2.4}
+              label={inv.id}
+              fill="#E7A93C"
+              onDown={(e) => onThingDown(e, inv.id, inv)}
+            />
+          ))}
+          {layout.meter ? (
+            <Marker
+              x={layout.meter.x}
+              y={layout.meter.y}
+              size={unit * 2.4}
+              label="M"
+              fill="#4FA3C0"
+              round
+              onDown={(e) => onThingDown(e, 'meter', layout.meter!)}
+            />
+          ) : null}
+          {layout.panelboard ? (
+            <Marker
+              x={layout.panelboard.x}
+              y={layout.panelboard.y}
+              size={unit * 2.4}
+              label="PB"
+              fill="#8DBE6C"
+              onDown={(e) => onThingDown(e, 'panelboard', layout.panelboard!)}
+            />
+          ) : null}
+
+          {measure ? (
+            <g>
+              <circle cx={measure.a.x} cy={measure.a.y} r={unit * 0.5} fill="#ff4d4d" />
+              {measure.b ? (
+                <>
+                  <line
+                    x1={measure.a.x}
+                    y1={measure.a.y}
+                    x2={measure.b.x}
+                    y2={measure.b.y}
+                    stroke="#ff4d4d"
+                    strokeWidth={unit * 0.3}
+                  />
+                  <circle cx={measure.b.x} cy={measure.b.y} r={unit * 0.5} fill="#ff4d4d" />
+                </>
               ) : null}
             </g>
-          );
-        })}
+          ) : null}
 
-        {layout.inverters.map((inv) => (
-          <Marker key={inv.id} x={inv.x} y={inv.y} size={unit * 2.4} label={inv.id} fill="#E7A93C" onDown={(e) => onThingDown(e, inv.id, inv)} />
-        ))}
-        {layout.meter ? <Marker x={layout.meter.x} y={layout.meter.y} size={unit * 2.4} label="M" fill="#4FA3C0" round onDown={(e) => onThingDown(e, 'meter', layout.meter!)} /> : null}
-        {layout.panelboard ? <Marker x={layout.panelboard.x} y={layout.panelboard.y} size={unit * 2.4} label="PB" fill="#8DBE6C" onDown={(e) => onThingDown(e, 'panelboard', layout.panelboard!)} /> : null}
-
-        {measure ? (
-          <g>
-            <circle cx={measure.a.x} cy={measure.a.y} r={unit * 0.5} fill="#ff4d4d" />
-            {measure.b ? (
-              <>
-                <line x1={measure.a.x} y1={measure.a.y} x2={measure.b.x} y2={measure.b.y} stroke="#ff4d4d" strokeWidth={unit * 0.3} />
-                <circle cx={measure.b.x} cy={measure.b.y} r={unit * 0.5} fill="#ff4d4d" />
-              </>
-            ) : null}
+          {/* Scale bar and north arrow, pinned to the view's corners */}
+          <g transform={`translate(${view.x + view.w * 0.03} ${view.y + view.h * 0.95})`}>
+            <rect
+              x={-unit * 0.6}
+              y={-unit * 3.2}
+              width={bar + unit * 1.2}
+              height={unit * 4}
+              fill="#000"
+              opacity={0.55}
+              rx={unit * 0.4}
+            />
+            <line x1={0} y1={0} x2={bar} y2={0} stroke="#fff" strokeWidth={unit * 0.4} />
+            <text x={bar / 2} y={-unit * 1} textAnchor="middle" fontSize={unit * 1.8} fill="#fff" fontFamily="sans-serif">
+              {bar} m
+            </text>
           </g>
-        ) : null}
-
-        {/* Scale bar and north arrow, pinned to the view's corners */}
-        <g transform={`translate(${view.x + view.w * 0.03} ${view.y + view.h * 0.95})`}>
-          <rect x={-unit * 0.6} y={-unit * 3.2} width={bar + unit * 1.2} height={unit * 4} fill="#000" opacity={0.55} rx={unit * 0.4} />
-          <line x1={0} y1={0} x2={bar} y2={0} stroke="#fff" strokeWidth={unit * 0.4} />
-          <text x={bar / 2} y={-unit * 1} textAnchor="middle" fontSize={unit * 1.8} fill="#fff" fontFamily="sans-serif">
-            {bar} m
-          </text>
-        </g>
-        <g transform={`translate(${view.x + view.w * 0.96} ${view.y + view.h * 0.08})`}>
-          <path d={`M0 ${-unit * 2.5} L${unit * 1.2} ${unit * 1.5} L0 ${unit * 0.6} L${-unit * 1.2} ${unit * 1.5} Z`} fill="#fff" />
-          <text x={0} y={unit * 4} textAnchor="middle" fontSize={unit * 1.8} fill="#fff" fontFamily="sans-serif">
-            N
-          </text>
-        </g>
-      </svg>
+          <g transform={`translate(${view.x + view.w * 0.96} ${view.y + view.h * 0.08})`}>
+            <path
+              d={`M0 ${-unit * 2.5} L${unit * 1.2} ${unit * 1.5} L0 ${unit * 0.6} L${-unit * 1.2} ${unit * 1.5} Z`}
+              fill="#fff"
+            />
+            <text x={0} y={unit * 4} textAnchor="middle" fontSize={unit * 1.8} fill="#fff" fontFamily="sans-serif">
+              N
+            </text>
+          </g>
+        </svg>
+        {bg ? <ImageryCredit provider={bg.imagery.provider} text={bg.credit} /> : null}
+      </View>
 
       <ThemedText type="small" themeColor="textMuted">
-        {`Imagery: zoom ${tileZoom}, about ${metresPerPixel(center.lat, tileZoom).toFixed(2)} m per pixel. Panels are drawn at true size; trust their outline over the photo's edges.`}
+        {`${bg?.imagery.provider === 'google' ? 'Google' : 'Esri'} imagery: zoom ${tileZoom}, about ${metresPerPixel(center.lat, tileZoom).toFixed(2)} m per pixel. Panels are drawn at true size; trust their outline over the photo's edges.`}
       </ThemedText>
 
       {/* Strings */}
@@ -454,7 +678,13 @@ export function LayoutEditor({
                   setPaint(s.id);
                   setTool('string');
                 }}
-                style={[styles.swatch, { backgroundColor: stringColor(layout.strings, s.id), borderColor: paint === s.id && tool === 'string' ? t.text : 'transparent' }]}>
+                style={[
+                  styles.swatch,
+                  {
+                    backgroundColor: stringColor(layout.strings, s.id),
+                    borderColor: paint === s.id && tool === 'string' ? t.text : 'transparent',
+                  },
+                ]}>
                 <ThemedText type="smallBold" style={{ color: '#12160F' }}>
                   {s.id}
                 </ThemedText>
@@ -463,12 +693,18 @@ export function LayoutEditor({
                 {count} panel{count === 1 ? '' : 's'}
               </ThemedText>
               <Choice
-                options={layout.inverters.map((i) => ({ value: i.id, label: i.id }))}
+                options={layout.inverters.map((i) => ({
+                  value: i.id,
+                  label: i.id,
+                }))}
                 value={s.inverterId}
                 onChange={(v) => setStringMppt(s.id, { inverterId: v })}
               />
               <Choice
-                options={[0, 1].map((m) => ({ value: String(m), label: `MPPT${m + 1}` }))}
+                options={[0, 1].map((m) => ({
+                  value: String(m),
+                  label: `MPPT${m + 1}`,
+                }))}
                 value={String(s.mppt)}
                 onChange={(v) => setStringMppt(s.id, { mppt: Number(v) })}
               />
@@ -480,8 +716,16 @@ export function LayoutEditor({
       {/* Inverters and building */}
       <View style={[styles.panel, { borderColor: t.line }]}>
         <View style={styles.row}>
-          <Field label="Floors" value={String(layout.floors)} onChange={(v) => update({ floors: Math.max(0, Math.round(Number(v) || 0)) })} />
-          <Field label="Floor height m" value={String(layout.floorHeightM)} onChange={(v) => update({ floorHeightM: Math.max(0, Number(v) || 0) })} />
+          <Field
+            label="Floors"
+            value={String(layout.floors)}
+            onChange={(v) => update({ floors: Math.max(0, Math.round(Number(v) || 0)) })}
+          />
+          <Field
+            label="Floor height m"
+            value={String(layout.floorHeightM)}
+            onChange={(v) => update({ floorHeightM: Math.max(0, Number(v) || 0) })}
+          />
         </View>
         {layout.inverters.map((inv) => (
           <View key={inv.id} style={styles.row}>
@@ -489,16 +733,36 @@ export function LayoutEditor({
               {inv.id}
             </ThemedText>
             <Choice
-              options={INVERTERS.map((m) => ({ value: m.model, label: m.model.replace('HYXi ', '') }))}
+              options={INVERTERS.map((m) => ({
+                value: m.model,
+                label: m.model.replace('HYXi ', ''),
+              }))}
               value={inv.model}
-              onChange={(v) => update({ inverters: layout.inverters.map((i) => (i.id === inv.id ? { ...i, model: v } : i)) })}
+              onChange={(v) =>
+                update({
+                  inverters: layout.inverters.map((i) => (i.id === inv.id ? { ...i, model: v } : i)),
+                })
+              }
             />
             <Field
               label="On floor"
               value={String(inv.floor)}
-              onChange={(v) => update({ inverters: layout.inverters.map((i) => (i.id === inv.id ? { ...i, floor: Math.max(1, Math.round(Number(v) || 1)) } : i)) })}
+              onChange={(v) =>
+                update({
+                  inverters: layout.inverters.map((i) =>
+                    i.id === inv.id ? { ...i, floor: Math.max(1, Math.round(Number(v) || 1)) } : i,
+                  ),
+                })
+              }
             />
-            <SmallButton label="Remove" onPress={() => update({ inverters: layout.inverters.filter((i) => i.id !== inv.id) })} />
+            <SmallButton
+              label="Remove"
+              onPress={() =>
+                update({
+                  inverters: layout.inverters.filter((i) => i.id !== inv.id),
+                })
+              }
+            />
           </View>
         ))}
         <View style={styles.row}>
@@ -532,16 +796,41 @@ function Marker({
       {round ? (
         <circle r={size / 2} fill={fill} stroke="#12160F" strokeWidth={size * 0.06} />
       ) : (
-        <rect x={-size / 2} y={-size / 2} width={size} height={size} fill={fill} stroke="#12160F" strokeWidth={size * 0.06} rx={size * 0.1} />
+        <rect
+          x={-size / 2}
+          y={-size / 2}
+          width={size}
+          height={size}
+          fill={fill}
+          stroke="#12160F"
+          strokeWidth={size * 0.06}
+          rx={size * 0.1}
+        />
       )}
-      <text y={size * 0.16} textAnchor="middle" fontSize={size * (label.length > 2 ? 0.3 : 0.45)} fill="#12160F" fontFamily="sans-serif" fontWeight="bold">
+      <text
+        y={size * 0.16}
+        textAnchor="middle"
+        fontSize={size * (label.length > 2 ? 0.3 : 0.45)}
+        fill="#12160F"
+        fontFamily="sans-serif"
+        fontWeight="bold">
         {label}
       </text>
     </g>
   );
 }
 
-function Field({ label, value, onChange, width = 90 }: { label: string; value: string; onChange: (v: string) => void; width?: number }) {
+function Field({
+  label,
+  value,
+  onChange,
+  width = 90,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  width?: number;
+}) {
   const t = useTheme();
   return (
     <View style={{ gap: 2 }}>
@@ -551,19 +840,42 @@ function Field({ label, value, onChange, width = 90 }: { label: string; value: s
       <TextInput
         value={value}
         onChangeText={onChange}
-        style={[styles.input, { width, borderColor: t.lineStrong, color: t.text, backgroundColor: t.background }]}
+        style={[
+          styles.input,
+          {
+            width,
+            borderColor: t.lineStrong,
+            color: t.text,
+            backgroundColor: t.background,
+          },
+        ]}
       />
     </View>
   );
 }
 
-function Choice({ options, value, onChange }: { options: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
+function Choice({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
   const t = useTheme();
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      style={{ padding: '6px 8px', borderRadius: Radius.sm, border: `1px solid ${t.lineStrong}`, background: t.background, color: t.text, fontSize: 13 }}>
+      style={{
+        padding: '6px 8px',
+        borderRadius: Radius.sm,
+        border: `1px solid ${t.lineStrong}`,
+        background: t.background,
+        color: t.text,
+        fontSize: 13,
+      }}>
       {options.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
@@ -574,9 +886,36 @@ function Choice({ options, value, onChange }: { options: { value: string; label:
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two },
-  tool: { borderWidth: 1, borderRadius: Radius.pill, paddingHorizontal: Spacing.three, paddingVertical: 6 },
-  panel: { borderWidth: 1, borderRadius: Radius.md, padding: Spacing.three, gap: Spacing.two },
-  swatch: { width: 32, height: 28, borderRadius: Radius.sm, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
-  input: { borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.two, paddingVertical: 6 },
+  row: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: Spacing.two,
+  },
+  tool: {
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 6,
+  },
+  panel: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.three,
+    gap: Spacing.two,
+  },
+  swatch: {
+    width: 32,
+    height: 28,
+    borderRadius: Radius.sm,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 6,
+  },
 });

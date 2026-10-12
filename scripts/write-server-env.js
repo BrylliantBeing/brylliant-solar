@@ -14,6 +14,8 @@
  *   MAIL_USER, MAIL_PASSWORD   the Hostinger mailbox the booking form sends from
  *   MAIL_TO       optional, where survey requests land (defaults to MAIL_USER)
  *   MAIL_HOST, MAIL_PORT       optional, default smtp.hostinger.com:465
+ *   GOOGLE_MAPS_KEY            optional, Google satellite for the PV design tool (Map Tiles API);
+ *                              without it the design tool uses Esri imagery
  *
  * Missing variables only warn: the site still deploys, and the affected API
  * answers with a clear "not set up" error until they are set.
@@ -27,7 +29,7 @@ const GROUPS = [
   { feature: 'saved quotes', keys: ['DB_NAME', 'DB_USER', 'DB_PASSWORD'] },
   { feature: 'booking form email', keys: ['MAIL_USER', 'MAIL_PASSWORD'] },
 ];
-const OPTIONAL = ['DB_HOST', 'MAIL_TO', 'MAIL_HOST', 'MAIL_PORT'];
+const OPTIONAL = ['DB_HOST', 'MAIL_TO', 'MAIL_HOST', 'MAIL_PORT', 'GOOGLE_MAPS_KEY'];
 
 // npm runs scripts from the project root.
 const out = path.join(process.cwd(), 'dist', 'api', 'lib', 'env.php');

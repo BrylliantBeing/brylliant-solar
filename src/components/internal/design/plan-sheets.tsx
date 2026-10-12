@@ -1,14 +1,10 @@
-import {
-  panelSize,
-  type Circuit,
-  type DesignResult,
-} from "@calculator/pvDesign";
-import type { ReactNode } from "react";
+import { panelSize, type Circuit, type DesignResult } from '@calculator/pvDesign';
+import type { ReactNode } from 'react';
 
-import { stringColor } from "./strings";
+import { stringColor } from './strings';
 
-import { siteBox, siteCenter, tilesAround } from "@/lib/design-geo";
-import type { DesignDoc, DesignProject } from "@/lib/designs-api";
+import { siteBox, siteCenter, tilesAround } from '@/lib/design-geo';
+import type { DesignDoc, DesignProject } from '@/lib/designs-api';
 
 /**
  * The net-metering plan set as two A3 landscape sheets, drawn in millimetres
@@ -24,40 +20,40 @@ export type SheetData = {
 
 const W = 420;
 const H = 297;
-const INK = "#111";
-const FONT = "Arial, Helvetica, sans-serif";
+const INK = '#111';
+const FONT = 'Arial, Helvetica, sans-serif';
 
 const GENERAL_NOTES = [
-  "ALL ELECTRICAL WORKS SHALL BE DONE IN ACCORDANCE WITH THE LATEST EDITION OF THE PHILIPPINE ELECTRICAL CODE.",
-  "MINIMUM SIZE OF WIRE AND CONDUIT FOR PHOTOVOLTAIC MODULES SHALL BE 4mm² DC CABLE AND 15mm Ø RESPECTIVELY UNLESS OTHERWISE SPECIFIED ON PLAN.",
-  "ALL MATERIALS AND EQUIPMENT TO BE USED SHALL BE BRAND NEW AND OF APPROVED TYPE FOR THEIR LOCATION AND PURPOSE.",
-  "ALL METAL FRAMES SHALL BE PROPERLY AND ADEQUATELY GROUNDED.",
-  "ALL WEATHER-EXPOSED INSTALLATIONS SHALL USE WEATHERPROOF MATERIALS, ESPECIALLY CONDUITS, JUNCTION BOXES AND SAFETY DEVICES.",
-  "ALL SPECIAL EQUIPMENT (INVERTERS AND PV MODULES) SHALL BE INSTALLED IN ACCORDANCE WITH THE CODE AND THE MANUFACTURER’S SPECIFICATIONS.",
-  "INVERTERS SHALL BE INSTALLED IN A WELL SECURED AND VENTILATED LOCATION.",
-  "ALL INSTALLATION SHALL BE DONE IN GOOD AND NEAT WORKMANSHIP.",
-  "ALL ELECTRICAL WORKS SHALL BE DONE UNDER THE DIRECT SUPERVISION OF A REGISTERED ELECTRICAL ENGINEER / REGISTERED MASTER ELECTRICIAN OR PROFESSIONAL SOLAR SYSTEM INSTALLER.",
+  'ALL ELECTRICAL WORKS SHALL BE DONE IN ACCORDANCE WITH THE LATEST EDITION OF THE PHILIPPINE ELECTRICAL CODE.',
+  'MINIMUM SIZE OF WIRE AND CONDUIT FOR PHOTOVOLTAIC MODULES SHALL BE 4mm² DC CABLE AND 15mm Ø RESPECTIVELY UNLESS OTHERWISE SPECIFIED ON PLAN.',
+  'ALL MATERIALS AND EQUIPMENT TO BE USED SHALL BE BRAND NEW AND OF APPROVED TYPE FOR THEIR LOCATION AND PURPOSE.',
+  'ALL METAL FRAMES SHALL BE PROPERLY AND ADEQUATELY GROUNDED.',
+  'ALL WEATHER-EXPOSED INSTALLATIONS SHALL USE WEATHERPROOF MATERIALS, ESPECIALLY CONDUITS, JUNCTION BOXES AND SAFETY DEVICES.',
+  'ALL SPECIAL EQUIPMENT (INVERTERS AND PV MODULES) SHALL BE INSTALLED IN ACCORDANCE WITH THE CODE AND THE MANUFACTURER’S SPECIFICATIONS.',
+  'INVERTERS SHALL BE INSTALLED IN A WELL SECURED AND VENTILATED LOCATION.',
+  'ALL INSTALLATION SHALL BE DONE IN GOOD AND NEAT WORKMANSHIP.',
+  'ALL ELECTRICAL WORKS SHALL BE DONE UNDER THE DIRECT SUPERVISION OF A REGISTERED ELECTRICAL ENGINEER / REGISTERED MASTER ELECTRICIAN OR PROFESSIONAL SOLAR SYSTEM INSTALLER.',
 ];
 
 const ABBREVIATIONS = [
-  "A - AMPERE",
-  "AT - AMPERE TRIP",
-  "AF - AMPERE FRAME",
-  "V - VOLTAGE",
-  "VA - VOLT AMPERE",
-  "KW - KILOWATT",
-  "MCB - MINIATURE CIRCUIT BREAKER",
-  "AC - ALTERNATING CURRENT",
-  "DC - DIRECT CURRENT",
-  "PV - PHOTOVOLTAIC",
-  "2P - TWO POLE / DOUBLE POLE",
-  "SPD - SURGE PROTECTION DEVICE",
-  "KAIC - KILO AMPERE INTERRUPTING CAPACITY",
-  "CT - CURRENT TRANSFORMER",
+  'A - AMPERE',
+  'AT - AMPERE TRIP',
+  'AF - AMPERE FRAME',
+  'V - VOLTAGE',
+  'VA - VOLT AMPERE',
+  'KW - KILOWATT',
+  'MCB - MINIATURE CIRCUIT BREAKER',
+  'AC - ALTERNATING CURRENT',
+  'DC - DIRECT CURRENT',
+  'PV - PHOTOVOLTAIC',
+  '2P - TWO POLE / DOUBLE POLE',
+  'SPD - SURGE PROTECTION DEVICE',
+  'KAIC - KILO AMPERE INTERRUPTING CAPACITY',
+  'CT - CURRENT TRANSFORMER',
 ];
 
 const n = (v: number, dp = 2) =>
-  v.toLocaleString("en-PH", {
+  v.toLocaleString('en-PH', {
     maximumFractionDigits: dp,
     minimumFractionDigits: dp,
   });
@@ -65,12 +61,12 @@ const n = (v: number, dp = 2) =>
 /** Breaks text into lines of at most `max` characters, on spaces. */
 function wrap(text: string, max: number): string[] {
   const out: string[] = [];
-  let line = "";
-  for (const word of text.split(" ")) {
-    if ((line + " " + word).trim().length > max && line) {
+  let line = '';
+  for (const word of text.split(' ')) {
+    if ((line + ' ' + word).trim().length > max && line) {
       out.push(line);
       line = word;
-    } else line = (line + " " + word).trim();
+    } else line = (line + ' ' + word).trim();
   }
   if (line) out.push(line);
   return out;
@@ -85,7 +81,7 @@ function T({
   y,
   size = 2.2,
   bold,
-  anchor = "start",
+  anchor = 'start',
   children,
   fill = INK,
 }: {
@@ -93,38 +89,18 @@ function T({
   y: number;
   size?: number;
   bold?: boolean;
-  anchor?: "start" | "middle" | "end";
+  anchor?: 'start' | 'middle' | 'end';
   children: ReactNode;
   fill?: string;
 }) {
   return (
-    <text
-      x={x}
-      y={y}
-      fontSize={size}
-      fontFamily={FONT}
-      fontWeight={bold ? "bold" : "normal"}
-      textAnchor={anchor}
-      fill={fill}
-    >
+    <text x={x} y={y} fontSize={size} fontFamily={FONT} fontWeight={bold ? 'bold' : 'normal'} textAnchor={anchor} fill={fill}>
       {children}
     </text>
   );
 }
 
-function Lines({
-  x,
-  y,
-  lines,
-  size = 2.1,
-  gap = 1.35,
-}: {
-  x: number;
-  y: number;
-  lines: string[];
-  size?: number;
-  gap?: number;
-}) {
+function Lines({ x, y, lines, size = 2.1, gap = 1.35 }: { x: number; y: number; lines: string[]; size?: number; gap?: number }) {
   return (
     <>
       {lines.map((l, i) => (
@@ -137,35 +113,11 @@ function Lines({
 }
 
 /** A section title in the sample's style: a circled bullet, the title, a rule. */
-function Heading({
-  x,
-  y,
-  w,
-  children,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  children: string;
-}) {
+function Heading({ x, y, w, children }: { x: number; y: number; w: number; children: string }) {
   return (
     <g>
-      <circle
-        cx={x + 2.5}
-        cy={y - 1}
-        r={2.5}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.3}
-      />
-      <line
-        x1={x}
-        y1={y - 1}
-        x2={x + 5}
-        y2={y - 1}
-        stroke={INK}
-        strokeWidth={0.3}
-      />
+      <circle cx={x + 2.5} cy={y - 1} r={2.5} fill="none" stroke={INK} strokeWidth={0.3} />
+      <line x1={x} y1={y - 1} x2={x + 5} y2={y - 1} stroke={INK} strokeWidth={0.3} />
       <T x={x + 7} y={y} size={3} bold>
         {children}
       </T>
@@ -181,41 +133,12 @@ function Heading({
   );
 }
 
-function Breaker({
-  x,
-  y,
-  label,
-  vertical,
-}: {
-  x: number;
-  y: number;
-  label?: string;
-  vertical?: boolean;
-}) {
+function Breaker({ x, y, label, vertical }: { x: number; y: number; label?: string; vertical?: boolean }) {
   return (
     <g transform={`translate(${x} ${y}) rotate(${vertical ? 90 : 0})`}>
-      <circle
-        cx={-1.6}
-        cy={0}
-        r={0.45}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.25}
-      />
-      <circle
-        cx={1.6}
-        cy={0}
-        r={0.45}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.25}
-      />
-      <path
-        d="M -1.6 -0.4 A 1.8 1.8 0 0 1 1.6 -0.4"
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.3}
-      />
+      <circle cx={-1.6} cy={0} r={0.45} fill="none" stroke={INK} strokeWidth={0.25} />
+      <circle cx={1.6} cy={0} r={0.45} fill="none" stroke={INK} strokeWidth={0.25} />
+      <path d="M -1.6 -0.4 A 1.8 1.8 0 0 1 1.6 -0.4" fill="none" stroke={INK} strokeWidth={0.3} />
       {label ? (
         <text
           x={0}
@@ -224,8 +147,7 @@ function Breaker({
           fontFamily={FONT}
           textAnchor="middle"
           fill={INK}
-          transform={vertical ? "rotate(-90)" : undefined}
-        >
+          transform={vertical ? 'rotate(-90)' : undefined}>
           {label}
         </text>
       ) : null}
@@ -280,7 +202,7 @@ function Box({
         fill="#fff"
         stroke={INK}
         strokeWidth={0.35}
-        strokeDasharray={dash ? "1 0.7" : undefined}
+        strokeDasharray={dash ? '1 0.7' : undefined}
       />
       {children}
     </g>
@@ -288,59 +210,41 @@ function Box({
 }
 
 const L = ({ d, w = 0.3, dash }: { d: string; w?: number; dash?: boolean }) => (
-  <path
-    d={d}
-    fill="none"
-    stroke={INK}
-    strokeWidth={w}
-    strokeDasharray={dash ? "1 0.7" : undefined}
-  />
+  <path d={d} fill="none" stroke={INK} strokeWidth={w} strokeDasharray={dash ? '1 0.7' : undefined} />
 );
 
 /* ------------------------------------------------------------------ *
  * Sheet frame and title block
  * ------------------------------------------------------------------ */
 
-function Frame({
-  data,
-  sheet,
-  total,
-  children,
-}: {
-  data: SheetData;
-  sheet: number;
-  total: number;
-  children: ReactNode;
-}) {
+function Frame({ data, sheet, total, children }: { data: SheetData; sheet: number; total: number; children: ReactNode }) {
   const { plan } = data.doc.inputs;
-  const title =
-    plan.title ||
-    `${n(data.result.dcKw)}KWP GRID-TIE SOLAR PV ROOFTOP SYSTEM WITH NET METERING`;
+  const title = plan.title || `${n(data.result.dcKw)}KWP GRID-TIE SOLAR PV ROOFTOP SYSTEM WITH NET METERING`;
   const y0 = 262;
   const cells: { w: number; head: string; body: string[] }[] = [
     {
       w: 92,
-      head: "PROFESSIONAL ELECTRICAL ENGINEER",
+      head: 'PROFESSIONAL ELECTRICAL ENGINEER',
       body: [
         plan.engineer.toUpperCase(),
-        plan.engineerLicense ? `PRC LIC. NO. ${plan.engineerLicense}` : "",
-        "",
-        "SIGNATURE: ____________________",
+        plan.engineerLicense ? `PRC LIC. NO. ${plan.engineerLicense}` : '',
+        '',
+        'SIGNATURE: ____________________',
       ],
     },
     {
       w: 56,
-      head: "PREPARED BY",
-      body: [plan.designer.toUpperCase(), "BRYLLIANT SOLAR"],
+      head: 'PREPARED BY',
+      body: [plan.designer.toUpperCase(), 'BRYLLIANT SOLAR'],
     },
-    { w: 86, head: "PROJECT TITLE", body: wrap(title.toUpperCase(), 40) },
+    { w: 86, head: 'PROJECT TITLE', body: wrap(title.toUpperCase(), 40) },
     {
       w: 80,
-      head: "PROJECT LOCATION",
+      head: 'PROJECT LOCATION',
       body: wrap(plan.location.toUpperCase(), 38),
     },
-    { w: 62, head: "OWNER", body: wrap(plan.ownerName.toUpperCase(), 28) },
-    { w: 24, head: "SHEET", body: [] },
+    { w: 62, head: 'OWNER', body: wrap(plan.ownerName.toUpperCase(), 28) },
+    { w: 24, head: 'SHEET', body: [] },
   ];
   let x = 10;
   return (
@@ -348,60 +252,24 @@ function Frame({
       viewBox={`0 0 ${W} ${H}`}
       xmlns="http://www.w3.org/2000/svg"
       className="design-sheet"
-      style={{ background: "#fff", display: "block" }}
-    >
+      style={{ background: '#fff', display: 'block' }}>
       <rect x={0} y={0} width={W} height={H} fill="#fff" />
-      <rect
-        x={8}
-        y={8}
-        width={W - 16}
-        height={H - 16}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.7}
-      />
+      <rect x={8} y={8} width={W - 16} height={H - 16} fill="none" stroke={INK} strokeWidth={0.7} />
       <line x1={8} y1={y0} x2={W - 8} y2={y0} stroke={INK} strokeWidth={0.5} />
       {cells.map((c) => {
         const cx = x;
         x += c.w;
         return (
           <g key={c.head}>
-            <line
-              x1={cx + c.w}
-              y1={y0}
-              x2={cx + c.w}
-              y2={H - 8}
-              stroke={INK}
-              strokeWidth={0.3}
-            />
+            <line x1={cx + c.w} y1={y0} x2={cx + c.w} y2={H - 8} stroke={INK} strokeWidth={0.3} />
             <T x={cx + 1.5} y={y0 + 3.5} size={1.8} bold>
               {c.head}
             </T>
-            {c.head === "SHEET" ? (
+            {c.head === 'SHEET' ? (
               <>
-                <circle
-                  cx={cx + c.w / 2}
-                  cy={y0 + 14}
-                  r={7}
-                  fill="none"
-                  stroke={INK}
-                  strokeWidth={0.4}
-                />
-                <line
-                  x1={cx + c.w / 2 - 7}
-                  y1={y0 + 14}
-                  x2={cx + c.w / 2 + 7}
-                  y2={y0 + 14}
-                  stroke={INK}
-                  strokeWidth={0.3}
-                />
-                <T
-                  x={cx + c.w / 2}
-                  y={y0 + 12.5}
-                  size={3.2}
-                  bold
-                  anchor="middle"
-                >
+                <circle cx={cx + c.w / 2} cy={y0 + 14} r={7} fill="none" stroke={INK} strokeWidth={0.4} />
+                <line x1={cx + c.w / 2 - 7} y1={y0 + 14} x2={cx + c.w / 2 + 7} y2={y0 + 14} stroke={INK} strokeWidth={0.3} />
+                <T x={cx + c.w / 2} y={y0 + 12.5} size={3.2} bold anchor="middle">
                   E-{sheet}
                 </T>
                 <T x={cx + c.w / 2} y={y0 + 18.5} size={2.4} anchor="middle">
@@ -413,7 +281,7 @@ function Frame({
                 x={cx + 1.5}
                 y={y0 + 8}
                 lines={c.body.filter((_, i) => i < 5)}
-                size={c.head === "PROJECT TITLE" ? 2.8 : 2.3}
+                size={c.head === 'PROJECT TITLE' ? 2.8 : 2.3}
               />
             )}
           </g>
@@ -430,41 +298,20 @@ function Frame({
 
 function GeneralNotes({ x, y, w }: { x: number; y: number; w: number }) {
   const notes = GENERAL_NOTES.map((note) => wrap(note, Math.floor(w / 1.05)));
-  const tops = notes.map(
-    (_, i) =>
-      y + 6 + notes.slice(0, i).reduce((a, l) => a + l.length * 2.6 + 0.8, 0),
-  );
+  const tops = notes.map((_, i) => y + 6 + notes.slice(0, i).reduce((a, l) => a + l.length * 2.6 + 0.8, 0));
   return (
     <g>
       <Heading x={x} y={y} w={w}>
         GENERAL NOTES AND SPECIFICATIONS
       </Heading>
       {notes.map((lines, i) => (
-        <Lines
-          key={i}
-          x={x}
-          y={tops[i]}
-          lines={lines.map((l, k) => (k === 0 ? `${i + 1}. ${l}` : `    ${l}`))}
-          size={1.9}
-        />
+        <Lines key={i} x={x} y={tops[i]} lines={lines.map((l, k) => (k === 0 ? `${i + 1}. ${l}` : `    ${l}`))} size={1.9} />
       ))}
     </g>
   );
 }
 
-function SitePlan({
-  x,
-  y,
-  w,
-  h,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  data: SheetData;
-}) {
+function SitePlan({ x, y, w, h, data }: { x: number; y: number; w: number; h: number; data: SheetData }) {
   const { doc, result } = data;
   const L0 = doc.layout;
   const site = siteBox(doc.site);
@@ -514,19 +361,8 @@ function SitePlan({
           {L0.panels.map((p) => {
             const { w: pw, h: ph } = panelSize(result.panel, p.orientation);
             return (
-              <g
-                key={p.id}
-                transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}
-              >
-                <rect
-                  x={-pw / 2}
-                  y={-ph / 2}
-                  width={pw}
-                  height={ph}
-                  fill="#fff"
-                  stroke={INK}
-                  strokeWidth={0.25 / s}
-                />
+              <g key={p.id} transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}>
+                <rect x={-pw / 2} y={-ph / 2} width={pw} height={ph} fill="#fff" stroke={INK} strokeWidth={0.25 / s} />
                 <line
                   x1={-pw / 2}
                   y1={-ph / 2}
@@ -540,44 +376,22 @@ function SitePlan({
           })}
           {L0.inverters.map((i) => (
             <g key={i.id}>
-              <rect
-                x={i.x - 2 / s}
-                y={i.y - 2 / s}
-                width={4 / s}
-                height={4 / s}
-                fill="#fff"
-                stroke={INK}
-                strokeWidth={0.3 / s}
-              />
-              <text
-                x={i.x}
-                y={i.y + 0.7 / s}
-                fontSize={1.8 / s}
-                textAnchor="middle"
-                fontFamily={FONT}
-              >
+              <rect x={i.x - 2 / s} y={i.y - 2 / s} width={4 / s} height={4 / s} fill="#fff" stroke={INK} strokeWidth={0.3 / s} />
+              <text x={i.x} y={i.y + 0.7 / s} fontSize={1.8 / s} textAnchor="middle" fontFamily={FONT}>
                 INV
               </text>
             </g>
           ))}
           {L0.meter ? (
             <g>
-              <circle
-                cx={L0.meter.x}
-                cy={L0.meter.y}
-                r={2 / s}
-                fill="#fff"
-                stroke={INK}
-                strokeWidth={0.3 / s}
-              />
+              <circle cx={L0.meter.x} cy={L0.meter.y} r={2 / s} fill="#fff" stroke={INK} strokeWidth={0.3 / s} />
               <text
                 x={L0.meter.x}
                 y={L0.meter.y + 0.7 / s}
                 fontSize={2 / s}
                 textAnchor="middle"
                 fontFamily={FONT}
-                fontWeight="bold"
-              >
+                fontWeight="bold">
                 M
               </text>
             </g>
@@ -593,13 +407,7 @@ function SitePlan({
                 stroke={INK}
                 strokeWidth={0.3 / s}
               />
-              <text
-                x={L0.panelboard.x}
-                y={L0.panelboard.y + 0.6 / s}
-                fontSize={1.6 / s}
-                textAnchor="middle"
-                fontFamily={FONT}
-              >
+              <text x={L0.panelboard.x} y={L0.panelboard.y + 0.6 / s} fontSize={1.6 / s} textAnchor="middle" fontFamily={FONT}>
                 PB
               </text>
             </g>
@@ -619,19 +427,7 @@ function SitePlan({
   );
 }
 
-function VicinityMap({
-  x,
-  y,
-  w,
-  h,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  data: SheetData;
-}) {
+function VicinityMap({ x, y, w, h, data }: { x: number; y: number; w: number; h: number; data: SheetData }) {
   const c = siteCenter(data.doc.site);
   const { tiles, px, py } = tilesAround(c.lat, c.lng, 16, 3);
   const top = y + 5;
@@ -655,27 +451,12 @@ function VicinityMap({
             y={top + tile.row * t}
             width={t}
             height={t}
-            style={{ filter: "grayscale(1)" }}
+            style={{ filter: 'grayscale(1)' }}
           />
         ))}
       </g>
-      <rect
-        x={ox}
-        y={top}
-        width={size}
-        height={size}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.4}
-      />
-      <circle
-        cx={ox + px * t}
-        cy={top + py * t}
-        r={2.2}
-        fill="none"
-        stroke="#c00"
-        strokeWidth={0.6}
-      />
+      <rect x={ox} y={top} width={size} height={size} fill="none" stroke={INK} strokeWidth={0.4} />
+      <circle cx={ox + px * t} cy={top + py * t} r={2.2} fill="none" stroke="#c00" strokeWidth={0.6} />
       <circle cx={ox + px * t} cy={top + py * t} r={0.6} fill="#c00" />
       <T x={ox} y={top + size + 3} size={1.9}>
         {`SITE: ${c.lat.toFixed(6)}, ${c.lng.toFixed(6)} · MAP © OPENSTREETMAP CONTRIBUTORS`}
@@ -684,18 +465,8 @@ function VicinityMap({
   );
 }
 
-function ServiceEntrance({
-  x,
-  y,
-  w,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  data: SheetData;
-}) {
-  const ac = data.result.circuits.find((c) => c.kind === "ac");
+function ServiceEntrance({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
+  const ac = data.result.circuits.find((c) => c.kind === 'ac');
   const s = data.doc.inputs.settings;
   const top = y + 6;
   return (
@@ -709,9 +480,7 @@ function ServiceEntrance({
       <T x={x + 2} y={top + 48} size={1.8}>
         ZAMCELCO POLE
       </T>
-      <L
-        d={`M ${x + 12} ${top + 5} Q ${x + 25} ${top + 12} ${x + 38} ${top + 10}`}
-      />
+      <L d={`M ${x + 12} ${top + 5} Q ${x + 25} ${top + 12} ${x + 38} ${top + 10}`} />
       <T x={x + 14} y={top + 4} size={1.8}>
         {`SERVICE DROP ${s.serviceDropMm2 ?? 14}mm² · ${s.serviceDropM ?? 30}m`}
       </T>
@@ -732,9 +501,7 @@ function ServiceEntrance({
       <T x={x + 45} y={top + 35.5} size={1.8}>
         (EXISTING, NEMA 3R)
       </T>
-      <L
-        d={`M ${x + 38} ${top + 38} L ${x + 38} ${top + 44} L ${x + 28} ${top + 44}`}
-      />
+      <L d={`M ${x + 38} ${top + 38} L ${x + 38} ${top + 44} L ${x + 28} ${top + 44}`} />
       <L d={`M ${x + 28} ${top + 44} L ${x + 28} ${top + 52}`} w={0.6} />
       <Ground x={x + 28} y={top + 52} />
       <T x={x + 31} y={top + 51} size={1.8}>
@@ -749,17 +516,7 @@ function ServiceEntrance({
   );
 }
 
-function ShortCircuitBlock({
-  x,
-  y,
-  w,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  data: SheetData;
-}) {
+function ShortCircuitBlock({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
   const sc = data.result.shortCircuit;
   const lines: string[] = sc
     ? [
@@ -778,63 +535,33 @@ function ShortCircuitBlock({
         }),
         `THEREFORE, SELECT KAIC RATING OF CIRCUIT BREAKER NOT LESS THAN ${sc.kaic}KAIC.`,
       ]
-    : ["PLACE THE INVERTER AND METER TO RUN THE SHORT-CIRCUIT ANALYSIS."];
+    : ['PLACE THE INVERTER AND METER TO RUN THE SHORT-CIRCUIT ANALYSIS.'];
   return (
     <g>
       <Heading x={x} y={y} w={w}>
         SHORT CIRCUIT ANALYSIS
       </Heading>
-      <Lines
-        x={x}
-        y={y + 6}
-        lines={lines.flatMap((l) => wrap(l, Math.floor(w / 0.98)))}
-        size={1.85}
-      />
+      <Lines x={x} y={y + 6} lines={lines.flatMap((l) => wrap(l, Math.floor(w / 0.98)))} size={1.85} />
     </g>
   );
 }
 
-function VoltageDropBlock({
-  x,
-  y,
-  w,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  data: SheetData;
-}) {
+function VoltageDropBlock({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
   const lines = data.result.circuits.flatMap((c: Circuit) => [
-    `${c.label.toUpperCase()} (${c.kind.toUpperCase()}): 2-${c.mm2}mm² ${c.kind === "dc" ? "PV CABLE" : "THHN"}, L = ${n(c.oneWayM, 1)}m, I = ${n(c.vdropCurrentA)}A`,
-    `  VD = 2 × L × I × Z / 305 = ${n(c.vdropV)}V;  %VD = ${n(c.vdropV)}V / ${n(c.nominalV, 1)}V = ${n(c.vdropPct)}%  ${c.vdropPct <= 3 ? "≤ 3% OK" : "> 3%"}`,
+    `${c.label.toUpperCase()} (${c.kind.toUpperCase()}): 2-${c.mm2}mm² ${c.kind === 'dc' ? 'PV CABLE' : 'THHN'}, L = ${n(c.oneWayM, 1)}m, I = ${n(c.vdropCurrentA)}A`,
+    `  VD = 2 × L × I × Z / 305 = ${n(c.vdropV)}V;  %VD = ${n(c.vdropV)}V / ${n(c.nominalV, 1)}V = ${n(c.vdropPct)}%  ${c.vdropPct <= 3 ? '≤ 3% OK' : '> 3%'}`,
   ]);
   return (
     <g>
       <Heading x={x} y={y} w={w}>
         VOLTAGE DROP CALCULATION
       </Heading>
-      <Lines
-        x={x}
-        y={y + 6}
-        lines={lines.flatMap((l) => wrap(l, Math.floor(w / 0.98)))}
-        size={1.85}
-      />
+      <Lines x={x} y={y + 6} lines={lines.flatMap((l) => wrap(l, Math.floor(w / 0.98)))} size={1.85} />
     </g>
   );
 }
 
-function StringCalc({
-  x,
-  y,
-  w,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  data: SheetData;
-}) {
+function StringCalc({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
   const p = data.result.panel;
   const lines = data.result.strings.flatMap((s) => [
     `STRING ${s.id} SERIES CONNECTION (${s.series}S) — ${s.inverterId} MPPT${s.mppt + 1}`,
@@ -846,45 +573,27 @@ function StringCalc({
       <Heading x={x} y={y} w={w}>
         PANEL STRING CALCULATION
       </Heading>
-      <Lines
-        x={x}
-        y={y + 6}
-        lines={[`${p.model.toUpperCase()} ${p.watts}W`, ...lines]}
-        size={1.85}
-      />
+      <Lines x={x} y={y + 6} lines={[`${p.model.toUpperCase()} ${p.watts}W`, ...lines]} size={1.85} />
     </g>
   );
 }
 
-function InverterSpec({
-  x,
-  y,
-  w,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  data: SheetData;
-}) {
+function InverterSpec({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
   const spec = data.result.inverters[0]?.spec;
   if (!spec) return null;
   const rows: [string, string][] = [
-    ["MODEL", spec.model.toUpperCase()],
-    ["MAX. DC INPUT POWER", `${spec.maxDcW}W`],
-    ["MAX. DC INPUT VOLTAGE", `${spec.maxDcV}V`],
-    ["MPPT VOLTAGE RANGE", `${spec.mpptMinV}-${spec.mpptMaxV}V`],
-    [
-      "MAX. DC INPUT CURRENT",
-      spec.mppts.map((m) => `${m.maxInputA}A`).join(" + "),
-    ],
-    ["MAX. SHORT CIRCUIT", spec.mppts.map((m) => `${m.maxIscA}A`).join(" + ")],
-    ["RATED AC GRID VOLTAGE", `${spec.nominalAcV}V`],
-    ["RATED AC GRID FREQUENCY", `${spec.frequencyHz} HZ`],
-    ["RATED AC OUTPUT POWER", `${spec.nominalAcW}W`],
-    ["MAX. APPARENT POWER", `${spec.maxApparentVA}VA`],
-    ["MAX. AC OUTPUT CURRENT", `${spec.maxAcA}A`],
-    ["POWER FACTOR", spec.powerFactor.toUpperCase()],
+    ['MODEL', spec.model.toUpperCase()],
+    ['MAX. DC INPUT POWER', `${spec.maxDcW}W`],
+    ['MAX. DC INPUT VOLTAGE', `${spec.maxDcV}V`],
+    ['MPPT VOLTAGE RANGE', `${spec.mpptMinV}-${spec.mpptMaxV}V`],
+    ['MAX. DC INPUT CURRENT', spec.mppts.map((m) => `${m.maxInputA}A`).join(' + ')],
+    ['MAX. SHORT CIRCUIT', spec.mppts.map((m) => `${m.maxIscA}A`).join(' + ')],
+    ['RATED AC GRID VOLTAGE', `${spec.nominalAcV}V`],
+    ['RATED AC GRID FREQUENCY', `${spec.frequencyHz} HZ`],
+    ['RATED AC OUTPUT POWER', `${spec.nominalAcW}W`],
+    ['MAX. APPARENT POWER', `${spec.maxApparentVA}VA`],
+    ['MAX. AC OUTPUT CURRENT', `${spec.maxAcA}A`],
+    ['POWER FACTOR', spec.powerFactor.toUpperCase()],
   ];
   return (
     <g>
@@ -959,37 +668,20 @@ function Legends({ x, y, w }: { x: number; y: number; w: number }) {
  * the inverter, the AC breaker and AC SPD, the existing panel board, then the
  * bi-directional meter and the service entrance.
  */
-function SingleLine({
-  x,
-  y,
-  w,
-  h,
-  data,
-}: {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  data: SheetData;
-}) {
+function SingleLine({ x, y, w, h, data }: { x: number; y: number; w: number; h: number; data: SheetData }) {
   const r = data.result;
   const groups = r.inverters.map((inv) => ({
     inv,
     strings: r.strings.filter((s) => s.inverterId === inv.id && s.series > 0),
   }));
   const pitch = 12;
-  const groupH = (g: (typeof groups)[number]) =>
-    Math.max(g.strings.length * pitch, 26) + 14;
-  const groupTops = groups.map(
-    (_, i) => y + 10 + groups.slice(0, i).reduce((a, g) => a + groupH(g), 0),
-  );
+  const groupH = (g: (typeof groups)[number]) => Math.max(g.strings.length * pitch, 26) + 14;
+  const groupTops = groups.map((_, i) => y + 10 + groups.slice(0, i).reduce((a, g) => a + groupH(g), 0));
   const pbX = x + w * 0.74;
   const pbTop = y + 10;
   const totalH = groups.reduce((a, g) => a + groupH(g), 0);
   const pbH = Math.max(28, totalH - 14);
-  const feeds = groups.map(
-    (g, i) => groupTops[i] + Math.max(g.strings.length * pitch, 26) / 2,
-  );
+  const feeds = groups.map((g, i) => groupTops[i] + Math.max(g.strings.length * pitch, 26) / 2);
 
   return (
     <g>
@@ -1000,9 +692,7 @@ function SingleLine({
         const top = groupTops[gi];
         const invY = feeds[gi];
         const invX = x + w * 0.38;
-        const dc = r.circuits.filter((c) =>
-          g.strings.some((s) => c.id === `dc-${s.id}`),
-        );
+        const dc = r.circuits.filter((c) => g.strings.some((s) => c.id === `dc-${s.id}`));
         const ac = r.circuits.find((c) => c.id === `ac-${g.inv.id}`);
         return (
           <g key={g.inv.id}>
@@ -1020,19 +710,13 @@ function SingleLine({
                     </T>
                   </Box>
                   <L d={`M ${x + 18} ${sy} L ${x + 26} ${sy}`} />
-                  <Breaker
-                    x={x + 29}
-                    y={sy}
-                    label={c?.breakerA ? `${c.breakerA}AT` : ""}
-                  />
-                  <L
-                    d={`M ${x + 32} ${sy} L ${invX - 4} ${sy} L ${invX - 4} ${invY} L ${invX} ${invY}`}
-                  />
+                  <Breaker x={x + 29} y={sy} label={c?.breakerA ? `${c.breakerA}AT` : ''} />
+                  <L d={`M ${x + 32} ${sy} L ${invX - 4} ${sy} L ${invX - 4} ${invY} L ${invX} ${invY}`} />
                 </g>
               );
             })}
             <T x={x + 20} y={top + g.strings.length * pitch + 3} size={1.7}>
-              {`2-${dc[0]?.mm2 ?? 4}mm² PV CABLE · ${dc[0]?.breakerA ?? ""}AT 2P 600VDC MCB`}
+              {`2-${dc[0]?.mm2 ?? 4}mm² PV CABLE · ${dc[0]?.breakerA ?? ''}AT 2P 600VDC MCB`}
             </T>
             {/* DC SPD on the inverter input */}
             <L d={`M ${invX - 4} ${invY} L ${invX - 4} ${invY + 9}`} dash />
@@ -1044,10 +728,7 @@ function SingleLine({
             <Ground x={invX - 4} y={invY + 13} />
             {/* Inverter */}
             <Box x={invX} y={invY - 9} w={20} h={18}>
-              <L
-                d={`M ${invX} ${invY + 9} L ${invX + 20} ${invY - 9}`}
-                w={0.2}
-              />
+              <L d={`M ${invX} ${invY + 9} L ${invX + 20} ${invY - 9}`} w={0.2} />
               <T x={invX + 5} y={invY - 4} size={2.4} bold anchor="middle">
                 =
               </T>
@@ -1056,7 +737,7 @@ function SingleLine({
               </T>
             </Box>
             <T x={invX + 10} y={invY + 12} size={1.7} bold anchor="middle">
-              {g.inv.spec.model.replace("HYXi ", "").toUpperCase()}
+              {g.inv.spec.model.replace('HYXi ', '').toUpperCase()}
             </T>
             <T x={invX + 10} y={invY + 14.4} size={1.6} anchor="middle">
               {`${g.inv.spec.nominalAcW / 1000}KW ${g.inv.spec.nominalAcV}V 1PH INVERTER`}
@@ -1064,16 +745,9 @@ function SingleLine({
             {/* AC out */}
             <L d={`M ${invX + 20} ${invY} L ${invX + 26} ${invY}`} />
             <Box x={invX + 26} y={invY - 4} w={10} h={8} dash />
-            <Breaker
-              x={invX + 31}
-              y={invY}
-              label={ac?.breakerA ? `${ac.breakerA}AT 2P` : ""}
-            />
+            <Breaker x={invX + 31} y={invY} label={ac?.breakerA ? `${ac.breakerA}AT 2P` : ''} />
             <L d={`M ${invX + 36} ${invY} L ${pbX} ${invY}`} />
-            <L
-              d={`M ${invX + 31} ${invY + 4} L ${invX + 31} ${invY + 8}`}
-              dash
-            />
+            <L d={`M ${invX + 31} ${invY + 4} L ${invX + 31} ${invY + 8}`} dash />
             <Box x={invX + 28} y={invY + 8} w={6} h={4}>
               <T x={invX + 31} y={invY + 10.7} size={1.4} anchor="middle">
                 SPD
@@ -1085,11 +759,7 @@ function SingleLine({
                 y={invY - 14}
                 size={1.5}
                 gap={1.3}
-                lines={[
-                  `2-${ac.mm2}mm² THHN`,
-                  `+ 1-${ac.groundMm2 ?? 5.5}mm² TW (G)`,
-                  `IN ${ac.mm2 >= 14 ? 25 : 20}mmØ PVC`,
-                ]}
+                lines={[`2-${ac.mm2}mm² THHN`, `+ 1-${ac.groundMm2 ?? 5.5}mm² TW (G)`, `IN ${ac.mm2 >= 14 ? 25 : 20}mmØ PVC`]}
               />
             ) : null}
           </g>
@@ -1107,16 +777,9 @@ function SingleLine({
       {feeds.map((fy, i) => (
         <circle key={i} cx={pbX} cy={fy} r={0.6} fill={INK} />
       ))}
-      <L
-        d={`M ${pbX + w * 0.1} ${pbTop + pbH} L ${pbX + w * 0.1} ${pbTop + pbH + 8}`}
-      />
+      <L d={`M ${pbX + w * 0.1} ${pbTop + pbH} L ${pbX + w * 0.1} ${pbTop + pbH + 8}`} />
       <Box x={pbX + w * 0.1 - 6} y={pbTop + pbH + 1.5} w={4} h={3}>
-        <T
-          x={pbX + w * 0.1 - 4}
-          y={pbTop + pbH + 3.7}
-          size={1.3}
-          anchor="middle"
-        >
+        <T x={pbX + w * 0.1 - 4} y={pbTop + pbH + 3.7} size={1.3} anchor="middle">
           CT
         </T>
       </Box>
@@ -1127,9 +790,7 @@ function SingleLine({
       <T x={pbX + w * 0.1 + 4} y={pbTop + pbH + 12.7} size={1.6}>
         METER
       </T>
-      <L
-        d={`M ${pbX + w * 0.1} ${pbTop + pbH + 14} L ${pbX + w * 0.1} ${pbTop + pbH + 22}`}
-      />
+      <L d={`M ${pbX + w * 0.1} ${pbTop + pbH + 14} L ${pbX + w * 0.1} ${pbTop + pbH + 22}`} />
       <T x={pbX + w * 0.1} y={pbTop + pbH + 25} size={1.7} bold anchor="middle">
         SERVICE ENTRANCE
       </T>
@@ -1138,7 +799,7 @@ function SingleLine({
       </T>
       {r.shortCircuit ? (
         <T x={x} y={y + h - 1} size={1.7}>
-          {`ALL BREAKERS ${r.shortCircuit.kaic}KAIC MINIMUM. DC/AC RATIO ${r.dcAcRatio ?? "—"} · ${n(r.dcKw)}KWP DC / ${n(r.acKw)}KW AC`}
+          {`ALL BREAKERS ${r.shortCircuit.kaic}KAIC MINIMUM. DC/AC RATIO ${r.dcAcRatio ?? '—'} · ${n(r.dcKw)}KWP DC / ${n(r.acKw)}KW AC`}
         </T>
       ) : null}
     </g>
@@ -1173,14 +834,7 @@ export function Sheet1({ data }: { data: SheetData }) {
           <Heading x={338} y={166} w={70}>
             DESIGN NOTES
           </Heading>
-          <Lines
-            x={338}
-            y={172}
-            lines={data.result.warnings
-              .flatMap((m) => wrap(m.toUpperCase(), 44))
-              .slice(0, 28)}
-            size={1.7}
-          />
+          <Lines x={338} y={172} lines={data.result.warnings.flatMap((m) => wrap(m.toUpperCase(), 44)).slice(0, 28)} size={1.7} />
         </g>
       ) : null}
     </Frame>
@@ -1189,12 +843,12 @@ export function Sheet1({ data }: { data: SheetData }) {
 
 export function Sheet2({ data }: { data: SheetData }) {
   const { loads } = data.doc.inputs.plan;
-  const pv = data.result.circuits.filter((c) => c.kind === "ac");
+  const pv = data.result.circuits.filter((c) => c.kind === 'ac');
   const rows = [
     ...loads.map((l, i) => ({ ckt: String(i + 1), ...l })),
     ...pv.map((c, i) => ({
       ckt: String(loads.length + i + 1),
-      description: `SOLAR PV (${c.label.split(" ")[0]})`,
+      description: `SOLAR PV (${c.label.split(' ')[0]})`,
       va: 0,
       breakerA: c.breakerA ?? 0,
       wire: `2-${c.mm2}mm², 1-${c.groundMm2 ?? 5.5}mm² (G)`,
@@ -1203,12 +857,12 @@ export function Sheet2({ data }: { data: SheetData }) {
   const totalVa = loads.reduce((a, l) => a + l.va, 0);
   const demandA = (totalVa * 0.7) / 230;
   const cols = [
-    { head: "CKT", w: 10 },
-    { head: "DESCRIPTION", w: 52 },
-    { head: "VA", w: 16 },
-    { head: "AT", w: 12 },
-    { head: "P", w: 8 },
-    { head: "WIRES (THHN / TW G)", w: 50 },
+    { head: 'CKT', w: 10 },
+    { head: 'DESCRIPTION', w: 52 },
+    { head: 'VA', w: 16 },
+    { head: 'AT', w: 12 },
+    { head: 'P', w: 8 },
+    { head: 'WIRES (THHN / TW G)', w: 50 },
   ];
   const tx = 16;
   const ty = 30;
@@ -1223,37 +877,16 @@ export function Sheet2({ data }: { data: SheetData }) {
       <Heading x={tx} y={20} w={tw}>
         SCHEDULE OF LOADS
       </Heading>
-      <rect
-        x={tx}
-        y={ty}
-        width={tw}
-        height={rh * (rows.length + 2)}
-        fill="none"
-        stroke={INK}
-        strokeWidth={0.35}
-      />
+      <rect x={tx} y={ty} width={tw} height={rh * (rows.length + 2)} fill="none" stroke={INK} strokeWidth={0.35} />
       {
         cols.reduce<{ x: number; els: ReactNode[] }>(
           (acc, c, i) => {
             acc.els.push(
               <g key={c.head}>
                 {i > 0 ? (
-                  <line
-                    x1={acc.x}
-                    y1={ty}
-                    x2={acc.x}
-                    y2={ty + rh * (rows.length + 1)}
-                    stroke={INK}
-                    strokeWidth={0.25}
-                  />
+                  <line x1={acc.x} y1={ty} x2={acc.x} y2={ty + rh * (rows.length + 1)} stroke={INK} strokeWidth={0.25} />
                 ) : null}
-                <T
-                  x={acc.x + c.w / 2}
-                  y={ty + 3.4}
-                  size={1.8}
-                  bold
-                  anchor="middle"
-                >
+                <T x={acc.x + c.w / 2} y={ty + 3.4} size={1.8} bold anchor="middle">
                   {c.head}
                 </T>
               </g>,
@@ -1269,22 +902,15 @@ export function Sheet2({ data }: { data: SheetData }) {
         const cells = [
           row.ckt,
           row.description.toUpperCase(),
-          row.va ? String(row.va) : "—",
+          row.va ? String(row.va) : '—',
           String(row.breakerA),
-          "2",
+          '2',
           row.wire,
         ];
         let cx = tx;
         return (
           <g key={i}>
-            <line
-              x1={tx}
-              y1={y}
-              x2={tx + tw}
-              y2={y}
-              stroke={INK}
-              strokeWidth={0.2}
-            />
+            <line x1={tx} y1={y} x2={tx + tw} y2={y} stroke={INK} strokeWidth={0.2} />
             {cells.map((v, k) => {
               const at = cx;
               cx += cols[k].w;
@@ -1294,8 +920,7 @@ export function Sheet2({ data }: { data: SheetData }) {
                   x={k === 1 || k === 5 ? at + 1.5 : at + cols[k].w / 2}
                   y={y + 3.4}
                   size={1.8}
-                  anchor={k === 1 || k === 5 ? "start" : "middle"}
-                >
+                  anchor={k === 1 || k === 5 ? 'start' : 'middle'}>
                   {v}
                 </T>
               );
@@ -1312,19 +937,15 @@ export function Sheet2({ data }: { data: SheetData }) {
         strokeWidth={0.25}
       />
       <T x={tx + 1.5} y={ty + rh * (rows.length + 1) + 3.4} size={1.9} bold>
-        {`TOTAL VA LOAD ${totalVa.toLocaleString("en-PH")}`}
+        {`TOTAL VA LOAD ${totalVa.toLocaleString('en-PH')}`}
       </T>
       <Lines
         x={tx}
         y={ty + rh * (rows.length + 2) + 5}
         size={1.9}
         lines={[
-          `DEMAND LOAD IN AMPERES: IL @ 70% D.F. = ${totalVa.toLocaleString("en-PH")} × 70% / 230V = ${n(demandA)} A`,
-          ...(rows.length
-            ? []
-            : [
-                "ADD THE HOUSE CIRCUITS ON THE DESIGN PAGE (STEP 4) TO FILL THIS SCHEDULE.",
-              ]),
+          `DEMAND LOAD IN AMPERES: IL @ 70% D.F. = ${totalVa.toLocaleString('en-PH')} × 70% / 230V = ${n(demandA)} A`,
+          ...(rows.length ? [] : ['ADD THE HOUSE CIRCUITS ON THE DESIGN PAGE (STEP 4) TO FILL THIS SCHEDULE.']),
         ]}
       />
 
@@ -1332,38 +953,17 @@ export function Sheet2({ data }: { data: SheetData }) {
         RISER DIAGRAM
       </Heading>
       <Box x={riserX + 22} y={30} w={36} h={Math.max(30, half * 9 + 10)} />
-      <L
-        d={`M ${riserX + 40} 30 L ${riserX + 40} ${30 + Math.max(30, half * 9 + 10)}`}
-        w={0.6}
-      />
+      <L d={`M ${riserX + 40} 30 L ${riserX + 40} ${30 + Math.max(30, half * 9 + 10)}`} w={0.6} />
       {rows.map((row, i) => {
         const left = i % 2 === 0;
         const y = 38 + Math.floor(i / 2) * 9;
         const bx = left ? riserX + 31 : riserX + 49;
         return (
           <g key={i}>
-            <L
-              d={
-                left
-                  ? `M ${riserX + 40} ${y} L ${bx + 3} ${y}`
-                  : `M ${riserX + 40} ${y} L ${bx - 3} ${y}`
-              }
-            />
+            <L d={left ? `M ${riserX + 40} ${y} L ${bx + 3} ${y}` : `M ${riserX + 40} ${y} L ${bx - 3} ${y}`} />
             <Breaker x={bx} y={y} label={`${row.breakerA}AT`} />
-            <L
-              d={
-                left
-                  ? `M ${bx - 3} ${y} L ${riserX + 14} ${y}`
-                  : `M ${bx + 3} ${y} L ${riserX + 66} ${y}`
-              }
-            />
-            <T
-              x={left ? riserX + 12 : riserX + 68}
-              y={y + 0.7}
-              size={2}
-              bold
-              anchor={left ? "end" : "start"}
-            >
+            <L d={left ? `M ${bx - 3} ${y} L ${riserX + 14} ${y}` : `M ${bx + 3} ${y} L ${riserX + 66} ${y}`} />
+            <T x={left ? riserX + 12 : riserX + 68} y={y + 0.7} size={2} bold anchor={left ? 'end' : 'start'}>
               {row.ckt}
             </T>
           </g>
@@ -1382,7 +982,7 @@ export function Sheet2({ data }: { data: SheetData }) {
         gap={1.5}
         lines={[
           p.model.toUpperCase(),
-          "",
+          '',
           `RATED POWER (PMAX)         ${p.watts} Wp`,
           `OPEN CIRCUIT VOLTAGE (VOC) ${n(p.vocV)} V`,
           `SHORT CIRCUIT CURRENT (ISC) ${n(p.iscA)} A`,
@@ -1392,11 +992,10 @@ export function Sheet2({ data }: { data: SheetData }) {
           `MAX. SERIES FUSE RATING     ${p.maxSeriesFuseA} A`,
           `DIMENSIONS                  ${p.lengthMm} × ${p.widthMm} × ${p.thicknessMm} mm`,
           `WEIGHT                      ${p.weightKg} kg`,
-          "",
+          '',
           `ARRAY: ${data.result.panels} MODULES, ${n(data.result.dcKw)} KWP`,
           ...data.result.strings.map(
-            (s) =>
-              `STRING ${s.id}: ${s.series}S, VOC ${n(s.vocV)}V, VMP ${n(s.vmpV)}V, IMP ${n(s.impA)}A`,
+            (s) => `STRING ${s.id}: ${s.series}S, VOC ${n(s.vocV)}V, VMP ${n(s.vmpV)}V, IMP ${n(s.impA)}A`,
           ),
         ]}
       />
