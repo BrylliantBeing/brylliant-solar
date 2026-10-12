@@ -78,9 +78,9 @@ function google(key: string, session: string): Imagery {
       }
     },
     async copyright(b, zoom) {
+      // Google's text names the imagery providers ("Imagery ©2026 Airbus, Maxar Technologies"); the logo beside it credits Google.
       try {
-        const text = (await viewport(b, zoom)).copyright;
-        return text ? `Imagery ©${new Date().getFullYear()} Google · ${text}` : 'Imagery © Google';
+        return (await viewport(b, zoom)).copyright || 'Imagery © Google';
       } catch {
         return 'Imagery © Google';
       }

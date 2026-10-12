@@ -101,6 +101,8 @@ try {
     reply(200, ['ok' => true, 'google' => ['key' => $key, 'session' => $s['session'], 'expiry' => $s['expiry']]]);
 } catch (Throwable $e) {
     error_log('imagery.php: ' . $e->getMessage());
-    // The design tool falls back to Esri rather than showing no map.
-    reply(200, ['ok' => true, 'google' => null, 'error' => 'Google imagery is not available right now; using Esri.']);
+    // The design tool falls back to Esri rather than showing no map. Google's reason goes to the
+    // owner as-is (it names the referrer or API, never the key), so a setup problem is plain to see.
+    $why = preg_replace('/^Google Map Tiles createSession failed: /', '', $e->getMessage());
+    reply(200, ['ok' => true, 'google' => null, 'error' => "Google imagery failed ($why). Using Esri."]);
 }

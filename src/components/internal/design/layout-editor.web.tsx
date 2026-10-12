@@ -54,6 +54,24 @@ const TOOLS: { tool: Tool; label: string; hint: string }[] = [
   },
 ];
 
+const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
+
+const SHORTCUTS: [string, string][] = [
+  [`${MOD} Z  /  ${MOD} Shift Z, ${MOD} Y`, 'Undo / redo'],
+  ['Delete, Backspace', 'Remove the selected panels, inverter, meter or panel board'],
+  [`${MOD} A`, 'Select every panel'],
+  [`${MOD} C  /  ${MOD} X  /  ${MOD} V`, 'Copy / cut / paste panels (pastes 1 m down-right, unstrung)'],
+  [`${MOD} D`, 'Duplicate the selected panels'],
+  ['Arrows  /  Shift arrows', 'Move the selection 10 cm / 1 m'],
+  ['R  /  Shift R', 'Rotate the selected panels 90° clockwise / anticlockwise'],
+  ['[  /  ]', 'Rotate the selected panels 5°'],
+  ['Esc', 'Clear the selection and go back to Select'],
+  ['V  A  S  I  M  B', 'Tools: select, add panels, paint string, inverter, meter, panel board'],
+];
+
+/** Only ever read from event handlers (undo grouping), never while rendering. */
+const clock = () => Date.now();
+
 const nextId = (prefix: string, taken: string[]) => {
   let n = 1;
   while (taken.includes(`${prefix}${n}`)) n += 1;
@@ -119,6 +137,9 @@ export function LayoutEditor({
   }));
   const [tool, setTool] = useState<Tool>('select');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** A selected inverter id, 'meter' or 'panelboard'; panels and equipment are never selected together */
+  const [thing, setThing] = useState<string | null>(null);
+  const [showKeys, setShowKeys] = useState(false);
   const [paint, setPaint] = useState<string | null>(layout.strings[0]?.id ?? null);
   const [arr, setArr] = useState({
     rows: '2',
@@ -159,7 +180,63 @@ export function LayoutEditor({
     return { x: p.x, y: p.y };
   }
 
-  const update = (patch: Partial<DesignLayout>) => onChange({ ...layout, ...patch });
+  /* ---------------- history */
+
+  /**
+   * Undo keeps whole layouts. Edits sharing a group collapse into one step: a
+   * drag is one step however many moves it makes, and arrow-key nudges or
+   * typing in a field merge while they come less than a second apart.
+   */
+  const past = useRef<DesignLayout[]>([]);
+  const future = useRef<DesignLayout[]>([]);
+  const lastEdit = useRef<{ group: string; at: number } | null>(null);
+  const [depth, setDepth] = useState({ undo: 0, redo: 0 });
+  const gesture = useRef(0);
+
+  function commit(next: DesignLayout, group?: string) {
+    const now = clock();
+    const last = lastEdit.current;
+    const merge = !!group && last?.group === group && (group.startsWith('drag-') || now - last.at < 1000);
+    if (!merge) {
+      past.current = [...past.current, layout].slice(-100);
+      future.current = [];
+    }
+    lastEdit.current = group ? { group, at: now } : null;
+    setDepth({ undo: past.current.length, redo: 0 });
+    onChange(next);
+  }
+
+  const update = (patch: Partial<DesignLayout>, group?: string) => commit({ ...layout, ...patch }, group);
+
+  /** Keeps the selection to panels and equipment that still exist after an undo or redo. */
+  function restore(next: DesignLayout) {
+    lastEdit.current = null;
+    setSelected((sel) => new Set([...sel].filter((id) => next.panels.some((p) => p.id === id))));
+    setThing((th) =>
+      th && (th === 'meter' ? next.meter : th === 'panelboard' ? next.panelboard : next.inverters.some((i) => i.id === th))
+        ? th
+        : null,
+    );
+    onChange(next);
+  }
+
+  function undo() {
+    const prev = past.current[past.current.length - 1];
+    if (!prev) return;
+    past.current = past.current.slice(0, -1);
+    future.current = [...future.current, layout];
+    setDepth({ undo: past.current.length, redo: future.current.length });
+    restore(prev);
+  }
+
+  function redo() {
+    const next = future.current[future.current.length - 1];
+    if (!next) return;
+    future.current = future.current.slice(0, -1);
+    past.current = [...past.current, layout];
+    setDepth({ undo: past.current.length, redo: future.current.length });
+    restore(next);
+  }
 
   /* ---------------- canvas events */
 
@@ -207,6 +284,7 @@ export function LayoutEditor({
     }
     if (tool === 'select') {
       if (!e.shiftKey) setSelected(new Set());
+      setThing(null);
       drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, view };
       svg.current?.setPointerCapture(e.pointerId);
     }
@@ -236,6 +314,8 @@ export function LayoutEditor({
       next = new Set([p.id]);
     }
     setSelected(next);
+    setThing(null);
+    gesture.current += 1;
     drag.current = {
       kind: 'panels',
       start: at(e),
@@ -247,6 +327,9 @@ export function LayoutEditor({
   function onThingDown(e: ReactPointerEvent<SVGGElement>, what: string, pos: { x: number; y: number }) {
     if (tool !== 'select') return;
     e.stopPropagation();
+    setThing(what);
+    setSelected(new Set());
+    gesture.current += 1;
     drag.current = { kind: 'thing', what, start: at(e), orig: pos };
     svg.current?.setPointerCapture(e.pointerId);
   }
@@ -269,16 +352,27 @@ export function LayoutEditor({
     const p = at(e);
     const dx = p.x - d.start.x;
     const dy = p.y - d.start.y;
+    // Ignore the jitter of a plain click, so selecting doesn't count as a move.
+    if (Math.hypot(dx, dy) < 0.02) return;
+    const group = `drag-${gesture.current}`;
     if (d.kind === 'panels') {
-      update({
-        panels: L.panels.map((x) => (d.orig.has(x.id) ? { ...x, x: d.orig.get(x.id)!.x + dx, y: d.orig.get(x.id)!.y + dy } : x)),
-      });
+      update(
+        {
+          panels: L.panels.map((x) =>
+            d.orig.has(x.id) ? { ...x, x: d.orig.get(x.id)!.x + dx, y: d.orig.get(x.id)!.y + dy } : x,
+          ),
+        },
+        group,
+      );
     } else if (d.what === 'meter' || d.what === 'panelboard') {
-      update({ [d.what]: { x: d.orig.x + dx, y: d.orig.y + dy } });
+      update({ [d.what]: { x: d.orig.x + dx, y: d.orig.y + dy } }, group);
     } else {
-      update({
-        inverters: L.inverters.map((i) => (i.id === d.what ? { ...i, x: d.orig.x + dx, y: d.orig.y + dy } : i)),
-      });
+      update(
+        {
+          inverters: L.inverters.map((i) => (i.id === d.what ? { ...i, x: d.orig.x + dx, y: d.orig.y + dy } : i)),
+        },
+        group,
+      );
     }
   }
 
@@ -328,15 +422,111 @@ export function LayoutEditor({
   }
 
   function nudge(dx: number, dy: number) {
-    update({
-      panels: layout.panels.map((x) => (selected.has(x.id) ? { ...x, x: x.x + dx, y: x.y + dy } : x)),
-    });
+    const move = <T extends { x: number; y: number }>(q: T): T => ({ ...q, x: q.x + dx, y: q.y + dy });
+    if (thing === 'meter' && layout.meter) update({ meter: move(layout.meter) }, 'nudge');
+    else if (thing === 'panelboard' && layout.panelboard) update({ panelboard: move(layout.panelboard) }, 'nudge');
+    else if (thing) update({ inverters: layout.inverters.map((i) => (i.id === thing ? move(i) : i)) }, 'nudge');
+    else if (selected.size) update({ panels: layout.panels.map((x) => (selected.has(x.id) ? move(x) : x)) }, 'nudge');
   }
 
   function deleteSelected() {
+    if (thing) {
+      if (thing === 'meter') update({ meter: null });
+      else if (thing === 'panelboard') update({ panelboard: null });
+      else update({ inverters: layout.inverters.filter((i) => i.id !== thing) });
+      setThing(null);
+      return;
+    }
+    if (!selected.size) return;
     update({ panels: layout.panels.filter((x) => !selected.has(x.id)) });
     setSelected(new Set());
   }
+
+  /* ---------------- copy and paste */
+
+  const clipboard = useRef<{ panels: LayoutPanel[]; pastes: number } | null>(null);
+
+  function copySelected() {
+    const panels = layout.panels.filter((x) => selected.has(x.id));
+    if (panels.length) clipboard.current = { panels, pastes: 0 };
+  }
+
+  /** Pastes as a new array, 1 m down and right of the last copy, unstrung. */
+  function paste() {
+    const clip = clipboard.current;
+    if (!clip) return;
+    clip.pastes += 1;
+    const off = clip.pastes;
+    const prefix = nextId('a', [...new Set(layout.panels.map((x) => x.rowId.split('-')[0]))]);
+    const rows = new Map<string, string>();
+    const added = clip.panels.map((p, i) => {
+      if (!rows.has(p.rowId)) rows.set(p.rowId, `${prefix}-${rows.size}`);
+      return { ...p, id: `${prefix}-p${i}`, rowId: rows.get(p.rowId)!, x: p.x + off, y: p.y + off, stringId: null };
+    });
+    update({ panels: [...layout.panels, ...added] });
+    setSelected(new Set(added.map((x) => x.id)));
+    setThing(null);
+  }
+
+  /* ---------------- keyboard */
+
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  useEffect(() => {
+    onKeyRef.current = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      // Typing in a field keeps the browser's own undo, delete and select-all.
+      if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      let handled = true;
+      if (mod && key === 'z' && !e.shiftKey) undo();
+      else if (mod && (key === 'y' || (key === 'z' && e.shiftKey))) redo();
+      else if (mod && key === 'a') {
+        setSelected(new Set(layout.panels.map((x) => x.id)));
+        setThing(null);
+        setTool('select');
+      } else if (mod && (key === 'c' || key === 'x') && !selected.size) handled = false; // leave text copying alone
+      else if (mod && key === 'c') copySelected();
+      else if (mod && key === 'x') {
+        copySelected();
+        deleteSelected();
+      } else if (mod && key === 'v') paste();
+      else if (mod && key === 'd' && selected.size) {
+        copySelected();
+        paste();
+      } else if (mod) handled = false;
+      else if (key === 'delete' || key === 'backspace') deleteSelected();
+      else if (key === 'escape') {
+        setSelected(new Set());
+        setThing(null);
+        setMeasure(null);
+        setTool('select');
+      } else if (key.startsWith('arrow') && (selected.size || thing)) {
+        const step = e.shiftKey ? 1 : 0.1;
+        const [dx, dy] = { arrowleft: [-step, 0], arrowright: [step, 0], arrowup: [0, -step], arrowdown: [0, step] }[key] ?? [
+          0, 0,
+        ];
+        nudge(dx, dy);
+      } else if (key === 'r') rotateSelected(e.shiftKey ? -90 : 90);
+      else if (key === '[') rotateSelected(-5);
+      else if (key === ']') rotateSelected(5);
+      else {
+        const pick = (
+          { v: 'select', a: 'array', s: 'string', i: 'inverter', m: 'meter', b: 'panelboard' } as Record<string, Tool>
+        )[key];
+        if (pick && !e.altKey) {
+          setTool(pick);
+          setMeasure(null);
+        } else handled = false;
+      }
+      if (handled) e.preventDefault();
+    };
+  });
+  useEffect(() => {
+    const listener = (e: KeyboardEvent) => onKeyRef.current(e);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
 
   function applyPattern() {
     const nums = patternText
@@ -346,7 +536,7 @@ export function LayoutEditor({
     const L = layout;
     const strings = stringsForPattern(nums, L.inverters);
     onPatternChange(nums);
-    onChange({
+    commit({
       ...L,
       strings,
       panels: autoAssign(
@@ -414,7 +604,25 @@ export function LayoutEditor({
             </ThemedText>
           </Pressable>
         ))}
+        <View style={{ flexGrow: 1 }} />
+        <SmallButton label={`Undo${depth.undo ? ` (${depth.undo})` : ''}`} onPress={undo} />
+        <SmallButton label="Redo" onPress={redo} />
+        <SmallButton label={showKeys ? 'Hide shortcuts' : 'Shortcuts'} onPress={() => setShowKeys((v) => !v)} />
       </View>
+      {showKeys ? (
+        <View style={[styles.panel, { borderColor: t.line }]}>
+          {SHORTCUTS.map(([keys, what]) => (
+            <View key={keys} style={styles.row}>
+              <ThemedText type="data" style={{ fontSize: 12, minWidth: 190 }}>
+                {keys}
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {what}
+              </ThemedText>
+            </View>
+          ))}
+        </View>
+      ) : null}
       {hint ? (
         <ThemedText type="small" themeColor="textMuted">
           {hint}
@@ -437,6 +645,16 @@ export function LayoutEditor({
               })
             }
           />
+        </View>
+      ) : null}
+
+      {tool === 'select' && thing ? (
+        <View style={styles.row}>
+          <ThemedText type="small" themeColor="textSecondary">
+            {thing === 'meter' ? 'Meter' : thing === 'panelboard' ? 'Panel board' : thing} selected · arrows move it, Delete
+            removes it
+          </ThemedText>
+          <SmallButton label="Delete" onPress={deleteSelected} />
         </View>
       ) : null}
 
@@ -583,6 +801,7 @@ export function LayoutEditor({
               size={unit * 2.4}
               label={inv.id}
               fill="#E7A93C"
+              selected={thing === inv.id}
               onDown={(e) => onThingDown(e, inv.id, inv)}
             />
           ))}
@@ -594,6 +813,7 @@ export function LayoutEditor({
               label="M"
               fill="#4FA3C0"
               round
+              selected={thing === 'meter'}
               onDown={(e) => onThingDown(e, 'meter', layout.meter!)}
             />
           ) : null}
@@ -604,6 +824,7 @@ export function LayoutEditor({
               size={unit * 2.4}
               label="PB"
               fill="#8DBE6C"
+              selected={thing === 'panelboard'}
               onDown={(e) => onThingDown(e, 'panelboard', layout.panelboard!)}
             />
           ) : null}
@@ -719,12 +940,12 @@ export function LayoutEditor({
           <Field
             label="Floors"
             value={String(layout.floors)}
-            onChange={(v) => update({ floors: Math.max(0, Math.round(Number(v) || 0)) })}
+            onChange={(v) => update({ floors: Math.max(0, Math.round(Number(v) || 0)) }, 'field-floors')}
           />
           <Field
             label="Floor height m"
             value={String(layout.floorHeightM)}
-            onChange={(v) => update({ floorHeightM: Math.max(0, Number(v) || 0) })}
+            onChange={(v) => update({ floorHeightM: Math.max(0, Number(v) || 0) }, 'field-floor-height')}
           />
         </View>
         {layout.inverters.map((inv) => (
@@ -781,6 +1002,7 @@ function Marker({
   label,
   fill,
   round,
+  selected,
   onDown,
 }: {
   x: number;
@@ -789,12 +1011,15 @@ function Marker({
   label: string;
   fill: string;
   round?: boolean;
+  selected?: boolean;
   onDown: (e: ReactPointerEvent<SVGGElement>) => void;
 }) {
+  const stroke = selected ? '#ffffff' : '#12160F';
+  const width = size * (selected ? 0.14 : 0.06);
   return (
     <g transform={`translate(${x} ${y})`} onPointerDown={onDown} style={{ cursor: 'move' }}>
       {round ? (
-        <circle r={size / 2} fill={fill} stroke="#12160F" strokeWidth={size * 0.06} />
+        <circle r={size / 2} fill={fill} stroke={stroke} strokeWidth={width} />
       ) : (
         <rect
           x={-size / 2}
@@ -802,8 +1027,8 @@ function Marker({
           width={size}
           height={size}
           fill={fill}
-          stroke="#12160F"
-          strokeWidth={size * 0.06}
+          stroke={stroke}
+          strokeWidth={width}
           rx={size * 0.1}
         />
       )}
