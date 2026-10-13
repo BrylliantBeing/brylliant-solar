@@ -247,6 +247,8 @@ export type Circuit = {
 
 export type BomLine = {
   id: string;
+  /** Where its price is looked up; the id unless two sizes share one (conduit) */
+  priceKey?: string;
   category: string;
   name: string;
   qty: number;
@@ -876,8 +878,8 @@ function buildBom(a: {
   const acM = ac.reduce((m, c) => m + c.oneWayM, 0);
   const acSize = ac.some((c) => c.mm2 >= 14) ? 25 : 20;
   if (s.conduitPieceM > 0) {
-    add({ id: 'conduit-dc', category: 'Conduit & small parts', name: `PVC conduit 20 mm, ${s.conduitPieceM} m`, qty: ceil(longestDc / s.conduitPieceM), unit: 'pc', detail: `${fmt(longestDc, 1)} m` });
-    add({ id: 'conduit-ac', category: 'Conduit & small parts', name: `PVC conduit ${acSize} mm, ${s.conduitPieceM} m`, qty: ceil(acM / s.conduitPieceM), unit: 'pc', detail: `${fmt(acM, 1)} m` });
+    add({ id: 'conduit-dc', priceKey: 'conduit-20', category: 'Conduit & small parts', name: `PVC conduit 20 mm, ${s.conduitPieceM} m`, qty: ceil(longestDc / s.conduitPieceM), unit: 'pc', detail: `${fmt(longestDc, 1)} m` });
+    add({ id: 'conduit-ac', priceKey: `conduit-${acSize}`, category: 'Conduit & small parts', name: `PVC conduit ${acSize} mm, ${s.conduitPieceM} m`, qty: ceil(acM / s.conduitPieceM), unit: 'pc', detail: `${fmt(acM, 1)} m` });
   }
   return out;
 }

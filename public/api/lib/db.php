@@ -221,4 +221,15 @@ function ensure_schema(PDO $pdo): void {
             updated_at   DATETIME     NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         SQL);
+
+    // The price list: one row per item whose price was set on the Prices page.
+    // Items not here use the default in src/lib/price-list.ts.
+    $pdo->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS prices (
+            item_key   VARCHAR(80)   NOT NULL PRIMARY KEY,
+            php        DECIMAL(12,2) NOT NULL,
+            updated_by VARCHAR(64)   NOT NULL,
+            updated_at DATETIME      NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        SQL);
 }

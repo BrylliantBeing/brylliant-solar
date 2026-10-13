@@ -7,6 +7,8 @@ import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { Model } from '@/constants/solar';
 import { useTheme } from '@/hooks/use-theme';
+import type { Savings } from '@/lib/design-savings';
+import type { DesignPrice } from '@/lib/price-list';
 import type { SunData } from '@/lib/pvgis';
 
 const f = (n: number, dp = 1) => n.toLocaleString('en-PH', { maximumFractionDigits: dp, minimumFractionDigits: dp });
@@ -14,7 +16,12 @@ const f = (n: number, dp = 1) => n.toLocaleString('en-PH', { maximumFractionDigi
 /** Settings worth editing per job; the rest stay at DESIGN_DEFAULTS. */
 const SETTING_FIELDS: { key: keyof DesignSettings; label: string; unit: string; help?: string }[] = [
   { key: 'minAmbientC', label: 'Coldest morning', unit: '°C', help: 'Sets the cold-corrected Voc.' },
-  { key: 'referenceTiltDeg', label: 'Reference array tilt', unit: '°', help: 'Your logged 1.95 kWp array, measured on the frame.' },
+  {
+    key: 'referenceTiltDeg',
+    label: 'Reference array tilt',
+    unit: '°',
+    help: 'Your logged 1.95 kWp array, measured on the frame.',
+  },
   { key: 'referenceAzimuthDeg', label: 'Reference array facing', unit: '°', help: '0 N, 90 E, 180 S, 270 W.' },
   { key: 'calibrationOverride', label: 'Fixed sun factor', unit: '×', help: '0 = calibrate from the reference array.' },
   { key: 'vdropLimitPct', label: 'Voltage drop limit', unit: '%' },
@@ -39,6 +46,9 @@ export function DesignResults({
   onSettings,
   onOverrides,
   sunData,
+  price,
+  savings,
+  pricesNote,
 }: {
   result: DesignResult;
   settings: Partial<DesignSettings>;
@@ -46,6 +56,9 @@ export function DesignResults({
   onSettings: (s: Partial<DesignSettings>) => void;
   onOverrides: (o: Record<string, CircuitOverride>) => void;
   sunData?: SunData;
+  price?: DesignPrice | null;
+  savings?: Savings | { error: string } | null;
+  pricesNote?: string | null;
 }) {
   const t = useTheme();
   const r = result;
@@ -68,9 +81,15 @@ export function DesignResults({
       <Panel title="System">
         <KeyValue label="Panels" value={`${r.panels} × ${r.panel.watts} W`} sub={r.panel.model} />
         <KeyValue label="DC capacity" value={`${f(r.dcKw, 2)} kWp`} />
-        <KeyValue label="AC capacity" value={`${f(r.acKw, 2)} kW`} sub={r.inverters.map((i) => `${i.id}: ${i.spec.model}`).join(' · ')} />
+        <KeyValue
+          label="AC capacity"
+          value={`${f(r.acKw, 2)} kW`}
+          sub={r.inverters.map((i) => `${i.id}: ${i.spec.model}`).join(' · ')}
+        />
         <KeyValue label="DC/AC ratio" value={r.dcAcRatio === null ? '—' : f(r.dcAcRatio, 2)} />
       </Panel>
+
+      {price ? <PriceBillPanel price={price} savings={savings ?? null} note={pricesNote ?? null} /> : null}
 
       <SunPanel result={r} sunData={sunData} />
 
@@ -104,9 +123,9 @@ export function DesignResults({
 
       <Panel title="Wires & breakers">
         <ThemedText type="small" themeColor="textMuted">
-          Sized automatically: breaker at 1.56 × Isc (DC) or 1.25 × max output (AC), wire to carry the breaker, then larger
-          until the drop is within {settings.vdropLimitPct ?? DESIGN_DEFAULTS.vdropLimitPct}%. Type a size to override it; it
-          is checked, not changed.
+          Sized automatically: breaker at 1.56 × Isc (DC) or 1.25 × max output (AC), wire to carry the breaker, then larger until
+          the drop is within {settings.vdropLimitPct ?? DESIGN_DEFAULTS.vdropLimitPct}%. Type a size to override it; it is
+          checked, not changed.
         </ThemedText>
         {r.circuits.map((c) => {
           const over = c.vdropPct > (settings.vdropLimitPct ?? DESIGN_DEFAULTS.vdropLimitPct);
@@ -114,14 +133,18 @@ export function DesignResults({
             <View key={c.id} style={[styles.circuit, { borderColor: over ? t.accentWarm : t.line }]}>
               <View style={{ flex: 1, minWidth: 220, gap: 2 }}>
                 <ThemedText type="smallBold">
-                  {c.label} <ThemedText type="small" themeColor="textMuted">· {c.kind.toUpperCase()}</ThemedText>
+                  {c.label}{' '}
+                  <ThemedText type="small" themeColor="textMuted">
+                    · {c.kind.toUpperCase()}
+                  </ThemedText>
                 </ThemedText>
                 <ThemedText type="data" style={{ fontSize: 12 }}>
                   {c.breakerA ?? '—'} AT · {c.mm2} mm²{c.awg ? ` (${c.awg})` : ''} · {c.ampacityA} A
                   {c.groundMm2 ? ` · ${c.groundMm2} mm² G` : ''}
                 </ThemedText>
                 <ThemedText type="data" themeColor="textMuted" style={{ fontSize: 12 }}>
-                  {f(c.oneWayM)} m one-way{c.estimated ? ' (estimated)' : ''} · {f(c.cableM)} m of wire · design {f(c.designA, 2)} A
+                  {f(c.oneWayM)} m one-way{c.estimated ? ' (estimated)' : ''} · {f(c.cableM)} m of wire · design {f(c.designA, 2)}{' '}
+                  A
                 </ThemedText>
                 <ThemedText type="data" style={{ fontSize: 12, color: over ? t.accentWarm : t.textSecondary }}>
                   Vdrop {f(c.vdropV, 2)} V = {f(c.vdropPct, 2)}% of {f(c.nominalV)} V at {f(c.vdropCurrentA, 2)} A
@@ -129,7 +152,11 @@ export function DesignResults({
                 </ThemedText>
               </View>
               <OverrideField label="Wire mm²" value={overrides[c.id]?.mm2} onChange={(v) => setOverride(c.id, 'mm2', v)} />
-              <OverrideField label="Breaker A" value={overrides[c.id]?.breakerA} onChange={(v) => setOverride(c.id, 'breakerA', v)} />
+              <OverrideField
+                label="Breaker A"
+                value={overrides[c.id]?.breakerA}
+                onChange={(v) => setOverride(c.id, 'breakerA', v)}
+              />
             </View>
           );
         })}
@@ -138,10 +165,19 @@ export function DesignResults({
 
       {r.shortCircuit ? (
         <Panel title="Short circuit">
-          <KeyValue label="Transformer" value={`${r.shortCircuit.transformerKva} kVA, ${r.shortCircuit.zPct}% Z`} sub={`IFLA ${f(r.shortCircuit.iflaA, 2)} A · multiplier ${f(r.shortCircuit.multiplier, 2)}`} />
+          <KeyValue
+            label="Transformer"
+            value={`${r.shortCircuit.transformerKva} kVA, ${r.shortCircuit.zPct}% Z`}
+            sub={`IFLA ${f(r.shortCircuit.iflaA, 2)} A · multiplier ${f(r.shortCircuit.multiplier, 2)}`}
+          />
           <KeyValue label="X1 transformer secondary" value={`${f(r.shortCircuit.x1A, 0)} A`} />
           {r.shortCircuit.points.map((p, i) => (
-            <KeyValue key={p.label} label={`X${i + 2} ${p.label}`} value={`${f(p.iscA, 0)} A`} sub={`${f(p.lengthM)} m of ${p.mm2} mm² · f ${p.f} · M ${p.m}`} />
+            <KeyValue
+              key={p.label}
+              label={`X${i + 2} ${p.label}`}
+              value={`${f(p.iscA, 0)} A`}
+              sub={`${f(p.lengthM)} m of ${p.mm2} mm² · f ${p.f} · M ${p.m}`}
+            />
           ))}
           <KeyValue label="Breaker interrupting rating" value={`${r.shortCircuit.kaic} kAIC min`} total />
         </Panel>
@@ -149,8 +185,16 @@ export function DesignResults({
 
       <Panel title="Materials">
         <Table
-          head={['Item', 'Category', 'Qty', 'How']}
-          rows={r.bom.map((l) => [l.name, l.category, `${l.qty}${l.unit ? ` ${l.unit}` : ''}`, l.detail ?? ''])}
+          head={['Item', 'Category', 'Qty', 'How', 'Each', 'Total']}
+          rows={(price?.lines ?? r.bom.map((l) => ({ ...l, unitPrice: null, total: 0 }))).map((l) => [
+            l.name,
+            l.category,
+            `${l.qty}${l.unit ? ` ${l.unit}` : ''}`,
+            l.detail ?? '',
+            l.unitPrice === null ? 'no price' : peso(l.unitPrice),
+            l.unitPrice === null ? '—' : peso(l.total),
+          ])}
+          foot={price ? ['Materials', '', '', '', '', peso(price.materials)] : undefined}
         />
       </Panel>
 
@@ -183,6 +227,68 @@ export function DesignResults({
 }
 
 /** Commits on blur, so a half-typed size doesn't recalculate on every keystroke. */
+const peso = (n: number) => `₱${Math.round(n).toLocaleString('en-PH')}`;
+
+/** The job's price and what the layout as drawn does to the bill; both follow every panel added or removed. */
+function PriceBillPanel({
+  price,
+  savings,
+  note,
+}: {
+  price: DesignPrice;
+  savings: Savings | { error: string } | null;
+  note: string | null;
+}) {
+  const ok = savings && !('error' in savings) ? savings : null;
+  const payback = ok && ok.annualSaving > 0 ? price.total / ok.annualSaving : null;
+  return (
+    <Panel title="Price & bill">
+      <KeyValue label="Materials" value={peso(price.materials)} sub={`${price.lines.length} lines from the design`} />
+      <KeyValue
+        label="Small parts & extras"
+        value={peso(price.extrasTotal)}
+        sub="Fittings, ties, lugs, labels, house breaker, safety switch, earthing clips"
+      />
+      <KeyValue label="Labour, freight, net metering, misc" value={peso(price.jobCosts)} />
+      <KeyValue
+        label="Total"
+        value={peso(price.total)}
+        total
+        sub={
+          price.unpriced.length
+            ? `Leaves out ${price.unpriced.length} unpriced: ${price.unpriced.join(', ')}. Set them on the Prices page.`
+            : undefined
+        }
+      />
+      {ok ? (
+        <>
+          <KeyValue label="Bill" value={`${peso(ok.monthlyBefore)} → ${peso(ok.monthlyAfter)} a month`} sub={ok.basis} />
+          <KeyValue
+            label="Bill reduction"
+            value={`${f(ok.reductionPct, 0)}%`}
+            sub={`${peso(ok.annualSaving)} a year${ok.clippedKwh ? ` · inverters clip ${f(ok.clippedKwh, 0)} kWh a year` : ''}`}
+            total
+          />
+          <KeyValue
+            label="Simple payback"
+            value={payback === null ? '—' : `${f(payback, 1)} years`}
+            sub="Total price ÷ yearly saving"
+          />
+        </>
+      ) : (
+        <ThemedText type="small" themeColor="accentWarm">
+          {savings && 'error' in savings ? savings.error : 'Working out the bill…'}
+        </ThemedText>
+      )}
+      {note ? (
+        <ThemedText type="small" themeColor="accentWarm">
+          {note}
+        </ThemedText>
+      ) : null}
+    </Panel>
+  );
+}
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /** Expected generation by roof face, from PVGIS less the derate. */
@@ -200,8 +306,21 @@ function SunPanel({ result: r, sunData }: { result: DesignResult; sunData?: SunD
   const vs = (pct: number) => (Math.abs(pct) < 0.5 ? 'best' : `${pct > 0 ? '+' : ''}${f(pct, 0)}%`);
   const cal = sun.calibration;
   return (
-    <Panel title="Sun" right={sunData?.loading ? <ThemedText type="small" themeColor="textMuted">Updating…</ThemedText> : undefined}>
-      <KeyValue label="Expected generation" value={`${f(sun.kwhPerYear, 0)} kWh/yr`} sub={`${f(sun.kwhPerDay)} kWh a day on average`} total />
+    <Panel
+      title="Sun"
+      right={
+        sunData?.loading ? (
+          <ThemedText type="small" themeColor="textMuted">
+            Updating…
+          </ThemedText>
+        ) : undefined
+      }>
+      <KeyValue
+        label="Expected generation"
+        value={`${f(sun.kwhPerYear, 0)} kWh/yr`}
+        sub={`${f(sun.kwhPerDay)} kWh a day on average`}
+        total
+      />
       <KeyValue
         label="Yield"
         value={`${f(sun.perKwpDay, 2)} kWh/kWp/day`}
@@ -255,14 +374,25 @@ function OverrideField({ label, value, onChange }: { label: string; value: numbe
           if (draft !== null && draft !== saved) onChange(draft);
           setDraft(null);
         }}
-        style={[styles.input, { borderColor: value !== undefined ? t.accentWarm : t.lineStrong, color: t.text, backgroundColor: t.background }]}
+        style={[
+          styles.input,
+          { borderColor: value !== undefined ? t.accentWarm : t.lineStrong, color: t.text, backgroundColor: t.background },
+        ]}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  circuit: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, alignItems: 'flex-end', borderWidth: 1, borderRadius: Radius.md, padding: Spacing.two },
+  circuit: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    alignItems: 'flex-end',
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.two,
+  },
   input: { width: 84, borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.two, paddingVertical: 6 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.three },
 });

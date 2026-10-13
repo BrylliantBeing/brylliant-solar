@@ -1,6 +1,7 @@
 import type { BomLine } from '@calculator/pvDesign';
 
 import type { JobItem, JobItemKind } from '@/lib/job-items';
+import { priceFor, priceKeyOf, type PriceOverrides } from '@/lib/price-list';
 
 /** The quote's lump-sum lines that a design's itemised list replaces. */
 const REPLACED_IDS = new Set(['mounting', 'pv-cable', 'mounting-cabling']);
@@ -22,9 +23,14 @@ const kindFor = (line: BomLine): JobItemKind =>
  * A job's items with the design's materials in. Panels and inverters update the
  * job's own lines (keeping their prices); everything else replaces the last
  * design's lines and the quote's lump sums. A line applied before keeps the
- * price typed against it; new ones come in at ₱0 for the owner to price.
+ * price typed against it; new ones take the price list's, or ₱0 when the
+ * price list has none.
  */
-export function applyDesignToJob(items: JobItem[], bom: BomLine[]): { items: JobItem[]; unpriced: number } {
+export function applyDesignToJob(
+  items: JobItem[],
+  bom: BomLine[],
+  prices: PriceOverrides = {},
+): { items: JobItem[]; unpriced: number } {
   const previous = new Map(items.filter((i) => i.id.startsWith('design-')).map((i) => [i.id, i]));
   let out = items.filter((i) => !i.id.startsWith('design-') && !REPLACED_IDS.has(i.id));
   let unpriced = 0;
@@ -39,7 +45,7 @@ export function applyDesignToJob(items: JobItem[], bom: BomLine[]): { items: Job
       }
     }
     const id = `design-${line.id}`;
-    const unitPrice = previous.get(id)?.unitPrice ?? 0;
+    const unitPrice = previous.get(id)?.unitPrice ?? priceFor(priceKeyOf(line), prices) ?? 0;
     if (unitPrice === 0) unpriced += 1;
     out.push({
       id,

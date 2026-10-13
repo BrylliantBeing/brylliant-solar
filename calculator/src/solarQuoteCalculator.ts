@@ -142,6 +142,14 @@ export interface CalculatorInput extends Partial<QuoteDefaults> {
   dateOrder?: DateOrder;
   /** OPTIONAL: defaults to hybrid */
   systemType?: SystemType;
+  /**
+   * OPTIONAL, grid-tie only: simulate exactly this many panels instead of
+   * sizing them to targetReduction. The PV design tool uses it to price the
+   * bill for the layout as drawn.
+   */
+  fixedPanels?: number;
+  /** OPTIONAL, with fixedPanels: the inverters as designed, instead of counting them from the panels */
+  fixedInverters?: { count: number; totalKw: number };
 }
 
 export interface MonthlyBill {
@@ -1557,7 +1565,8 @@ function sizePanels(
 
 export function calculateQuote(input: CalculatorInput): QuoteResult {
   const {
-    consumption, outages: rawOutages = [], sunProfile: sunInput, dateOrder, systemType = 'hybrid', ...overrides
+    consumption, outages: rawOutages = [], sunProfile: sunInput, dateOrder, systemType = 'hybrid', fixedPanels, fixedInverters,
+    ...overrides
   } = input;
   const gridTie = systemType === 'grid-tie';
   const base: QuoteDefaults = { ...ZAMBOANGA_DEFAULTS, ...stripUndefined(overrides) };
@@ -1637,7 +1646,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
   const sized = gridTie
     ? {
       battery: noBattery(),
-      panels: sizePanels(ctx, 0, countForLoad, cfg),
+      panels: fixedPanels !== undefined ? Math.max(0, Math.round(fixedPanels)) : sizePanels(ctx, 0, countForLoad, cfg),
       converged: true,
       iterations: 1,
     }
@@ -1646,8 +1655,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
 
   const systemKw = (panels * cfg.panelWatts) / 1000;
   const countForPanels = Math.ceil(panels / cfg.inverterMaxPanels - 1e-9);
-  const inverterCount = inverterCountFor(panels, countForLoad, cfg);
-  const inverterTotalKw = inverterCount * cfg.inverterKw;
+  const inverterCount = gridTie && fixedInverters ? fixedInverters.count : inverterCountFor(panels, countForLoad, cfg);
+  const inverterTotalKw = gridTie && fixedInverters ? fixedInverters.totalKw : inverterCount * cfg.inverterKw;
   const socTrace: number[] = [];
   const sim = simulateYear(ctx, systemKw, battery.installedKwh, inverterTotalKw, cfg, socTrace);
   const reductionPercent = sim.baseline > 0 ? (1 - sim.billAfter / sim.baseline) * 100 : 0;

@@ -15,6 +15,7 @@ import { Card } from '@/components/ui/kit';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { applyDesignToJob } from '@/lib/design-bom';
+import { savingsFromBill, savingsFromQuote } from '@/lib/design-savings';
 import { siteCenter } from '@/lib/design-geo';
 import {
   getDesign,
@@ -28,7 +29,9 @@ import {
 import { getJob, saveJob } from '@/lib/jobs-api';
 import { loadPipeline, type Project, type ProjectJob } from '@/lib/projects-api';
 import { useYields } from '@/lib/pvgis';
-import { manilaTime } from '@/lib/quotes-api';
+import { priceDesign, type PriceOverrides } from '@/lib/price-list';
+import { loadPrices } from '@/lib/prices-api';
+import { getQuote, manilaTime, type QuoteInputs } from '@/lib/quotes-api';
 
 type Step = 'site' | 'layout' | 'results' | 'plan';
 const STEPS: { step: Step; label: string }[] = [
@@ -38,7 +41,15 @@ const STEPS: { step: Step; label: string }[] = [
   { step: 'plan', label: '4 · Plan set' },
 ];
 
-const EMPTY_LAYOUT: DesignLayout = { panels: [], inverters: [], meter: null, panelboard: null, floors: 1, floorHeightM: 3, strings: [] };
+const EMPTY_LAYOUT: DesignLayout = {
+  panels: [],
+  inverters: [],
+  meter: null,
+  panelboard: null,
+  floors: 1,
+  floorHeightM: 3,
+  strings: [],
+};
 
 /** A design being edited: the site stays empty until the rectangle is drawn. */
 type Doc = Omit<DesignDoc, 'site'> & { site: DesignSite | null };
@@ -51,7 +62,15 @@ function newDoc(project: DesignProject): Doc {
       settings: {},
       overrides: {},
       pattern: [8, 7, 7],
-      plan: { title: '', ownerName: project.customer, location: project.address, designer: '', engineer: '', engineerLicense: '', loads: [] },
+      plan: {
+        title: '',
+        ownerName: project.customer,
+        location: project.address,
+        designer: '',
+        engineer: '',
+        engineerLicense: '',
+        loads: [],
+      },
     },
   };
 }
@@ -109,6 +128,11 @@ function Designer({ projectId }: { projectId: number }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<{ tone: 'warn' | 'note'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** For the price and the bill: the price list, the project's monthly bill, and its quote's consumption */
+  const [prices, setPrices] = useState<PriceOverrides | null>(null);
+  const [pricesError, setPricesError] = useState<string | null>(null);
+  const [monthlyBill, setMonthlyBill] = useState<number | null>(null);
+  const [quoteSrc, setQuoteSrc] = useState<{ id: number; inputs: QuoteInputs } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -125,12 +149,36 @@ function Designer({ projectId }: { projectId: number }) {
       })
       .catch((e: Error) => live && setLoadError(e.message));
     loadPipeline()
-      .then((p) => live && setJobs(p.jobs.filter((j) => j.projectId === projectId)))
+      .then((p) => {
+        if (!live) return;
+        setJobs(p.jobs.filter((j) => j.projectId === projectId));
+        setMonthlyBill(p.projects.find((x) => x.id === projectId)?.monthlyBill ?? null);
+      })
       .catch(() => {});
+    loadPrices()
+      .then((r) => live && setPrices(r.prices))
+      .catch((e: Error) => {
+        if (!live) return;
+        setPrices({});
+        setPricesError(`${e.message} Using the default prices.`);
+      });
     return () => {
       live = false;
     };
   }, [projectId]);
+
+  // The quote whose hourly consumption the bill is simulated from: the linked job's, else any job's.
+  const quoteId = jobs.find((j) => j.id === jobId)?.quoteId ?? jobs.find((j) => j.quoteId)?.quoteId ?? null;
+  useEffect(() => {
+    if (!quoteId) return;
+    let live = true;
+    getQuote(quoteId)
+      .then((q) => live && setQuoteSrc({ id: q.id, inputs: q.inputs }))
+      .catch(() => live && setQuoteSrc(null));
+    return () => {
+      live = false;
+    };
+  }, [quoteId]);
 
   const sunData = useYields(doc?.site ? siteCenter(doc.site) : null, doc?.layout.roofs, {
     tiltDeg: doc?.inputs.settings.referenceTiltDeg ?? DESIGN_DEFAULTS.referenceTiltDeg,
@@ -149,6 +197,25 @@ function Designer({ projectId }: { projectId: number }) {
           })
         : null,
     [doc, sunData.yields],
+  );
+
+  const price = useMemo(() => (result ? priceDesign(result, prices ?? {}) : null), [result, prices]);
+  // The bill simulation is a year of hourly steps, so it reruns only when something it depends on changes,
+  // not on every drag.
+  const savingsKey = result
+    ? [result.panels, result.inverters.length, result.acKw, result.sun?.monthlyKwh.join(','), quoteSrc?.id, monthlyBill].join('|')
+    : '';
+  const savings = useMemo(
+    () =>
+      !result
+        ? null
+        : quoteSrc && quoteSrc.id === quoteId
+          ? savingsFromQuote(quoteSrc.inputs, quoteSrc.id, result)
+          : monthlyBill
+            ? savingsFromBill(monthlyBill, result)
+            : { error: 'No saved quote or monthly bill on this project, so the bill reduction can’t be worked out.' },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [savingsKey],
   );
 
   if (loadError) {
@@ -197,8 +264,15 @@ function Designer({ projectId }: { projectId: number }) {
     setStatus(null);
     try {
       const job = await getJob(id);
-      const { items, unpriced } = applyDesignToJob(job.items, result.bom);
-      await saveJob({ id: job.id, projectId: job.projectId, quoteId: job.quoteId, systemType: job.systemType, items, settings: job.settings });
+      const { items, unpriced } = applyDesignToJob(job.items, result.bom, prices ?? {});
+      await saveJob({
+        id: job.id,
+        projectId: job.projectId,
+        quoteId: job.quoteId,
+        systemType: job.systemType,
+        items,
+        settings: job.settings,
+      });
       setJobId(id);
       setStatus({
         tone: 'note',
@@ -227,7 +301,14 @@ function Designer({ projectId }: { projectId: number }) {
                 key={s.step}
                 disabled={disabled}
                 onPress={() => setStep(s.step)}
-                style={[styles.step, { borderColor: step === s.step ? t.accent : t.lineStrong, backgroundColor: step === s.step ? t.backgroundSelected : t.background, opacity: disabled ? 0.4 : 1 }]}>
+                style={[
+                  styles.step,
+                  {
+                    borderColor: step === s.step ? t.accent : t.lineStrong,
+                    backgroundColor: step === s.step ? t.backgroundSelected : t.background,
+                    opacity: disabled ? 0.4 : 1,
+                  },
+                ]}>
                 <ThemedText type="small" themeColor={step === s.step ? 'text' : 'textSecondary'}>
                   {s.label}
                 </ThemedText>
@@ -239,6 +320,12 @@ function Designer({ projectId }: { projectId: number }) {
           <ThemedText type="small" themeColor={result.warnings.length ? 'accentWarm' : 'textMuted'}>
             {result.panels} panels · {result.dcKw} kWp · {result.warnings.length} warning{result.warnings.length === 1 ? '' : 's'}
           </ThemedText>
+          {price ? (
+            <ThemedText type="smallBold">
+              {`₱${Math.round(price.total).toLocaleString('en-PH')}${price.unpriced.length ? '*' : ''}`}
+              {savings && !('error' in savings) ? ` · bill −${Math.round(savings.reductionPct)}%` : ''}
+            </ThemedText>
+          ) : null}
           <ThemedText type="small" themeColor="textMuted">
             {dirty ? 'Unsaved changes' : savedAt ? `Saved ${manilaTime(savedAt)}` : 'Not saved'}
           </ThemedText>
@@ -246,7 +333,9 @@ function Designer({ projectId }: { projectId: number }) {
           <SmallButton label="Print drawings" onPress={print} />
         </View>
       </View>
-      {status ? <MessageList title={status.tone === 'warn' ? 'Problem' : 'Done'} items={[status.text]} tone={status.tone} /> : null}
+      {status ? (
+        <MessageList title={status.tone === 'warn' ? 'Problem' : 'Done'} items={[status.text]} tone={status.tone} />
+      ) : null}
 
       {step === 'site' ? (
         <Card>
@@ -285,12 +374,19 @@ function Designer({ projectId }: { projectId: number }) {
             onSettings={(settings) => setInputs({ settings })}
             onOverrides={(overrides) => setInputs({ overrides })}
             sunData={sunData}
+            price={price}
+            savings={savings}
+            pricesNote={pricesError}
           />
           <Panel title="Apply to a job">
             {jobs.length ? (
               <View style={styles.row}>
                 {jobs.map((j) => (
-                  <SmallButton key={j.id} label={`Job #${j.id} · ${j.panels} panels${j.id === jobId ? ' (linked)' : ''}`} onPress={() => applyToJob(j.id)} />
+                  <SmallButton
+                    key={j.id}
+                    label={`Job #${j.id} · ${j.panels} panels${j.id === jobId ? ' (linked)' : ''}`}
+                    onPress={() => applyToJob(j.id)}
+                  />
                 ))}
               </View>
             ) : (
@@ -299,8 +395,8 @@ function Designer({ projectId }: { projectId: number }) {
               </ThemedText>
             )}
             <ThemedText type="small" themeColor="textMuted">
-              Replaces the quote&apos;s rails-per-panel and PV-cable lines with the itemised list, and sets the panel and
-              inverter counts. Prices already on the job are kept.
+              Replaces the quote&apos;s rails-per-panel and PV-cable lines with the itemised list, and sets the panel and inverter
+              counts. Prices already on the job are kept.
             </ThemedText>
           </Panel>
         </>
@@ -319,10 +415,17 @@ function PlanForm({ plan, dcKw, onChange }: { plan: PlanSet; dcKw: number; onCha
       <ThemedText type="eyebrow" themeColor="textMuted" style={{ fontSize: 10 }}>
         {label}
       </ThemedText>
-      <TextInput value={plan[key]} placeholder={placeholder} placeholderTextColor={t.textMuted} onChangeText={(v) => onChange({ [key]: v })} style={input} />
+      <TextInput
+        value={plan[key]}
+        placeholder={placeholder}
+        placeholderTextColor={t.textMuted}
+        onChangeText={(v) => onChange({ [key]: v })}
+        style={input}
+      />
     </View>
   );
-  const setLoad = (i: number, patch: Partial<LoadCircuit>) => onChange({ loads: plan.loads.map((l, k) => (k === i ? { ...l, ...patch } : l)) });
+  const setLoad = (i: number, patch: Partial<LoadCircuit>) =>
+    onChange({ loads: plan.loads.map((l, k) => (k === i ? { ...l, ...patch } : l)) });
 
   return (
     <>
@@ -336,7 +439,16 @@ function PlanForm({ plan, dcKw, onChange }: { plan: PlanSet; dcKw: number; onCha
           {text('PRC license no.', 'engineerLicense')}
         </View>
       </Panel>
-      <Panel title="Schedule of loads" right={<SmallButton label="Add circuit" onPress={() => onChange({ loads: [...plan.loads, { description: '', va: 0, breakerA: 20, wire: '2-3.5mm², 1-2.0mm² (G)' }] })} />}>
+      <Panel
+        title="Schedule of loads"
+        right={
+          <SmallButton
+            label="Add circuit"
+            onPress={() =>
+              onChange({ loads: [...plan.loads, { description: '', va: 0, breakerA: 20, wire: '2-3.5mm², 1-2.0mm² (G)' }] })
+            }
+          />
+        }>
         <ThemedText type="small" themeColor="textMuted">
           The house&apos;s existing circuits, from the survey. They fill sheet 2&apos;s load schedule and riser diagram.
         </ThemedText>
@@ -345,10 +457,34 @@ function PlanForm({ plan, dcKw, onChange }: { plan: PlanSet; dcKw: number; onCha
             <ThemedText type="data" style={{ width: 24 }}>
               {i + 1}
             </ThemedText>
-            <TextInput value={l.description} placeholder="Description" placeholderTextColor={t.textMuted} onChangeText={(v) => setLoad(i, { description: v })} style={[input, { flexGrow: 1, minWidth: 180 }]} />
-            <TextInput value={l.va ? String(l.va) : ''} placeholder="VA" placeholderTextColor={t.textMuted} onChangeText={(v) => setLoad(i, { va: Number(v) || 0 })} style={[input, { width: 80 }]} />
-            <TextInput value={String(l.breakerA)} placeholder="AT" placeholderTextColor={t.textMuted} onChangeText={(v) => setLoad(i, { breakerA: Number(v) || 0 })} style={[input, { width: 64 }]} />
-            <TextInput value={l.wire} placeholder="Wire" placeholderTextColor={t.textMuted} onChangeText={(v) => setLoad(i, { wire: v })} style={[input, { width: 200 }]} />
+            <TextInput
+              value={l.description}
+              placeholder="Description"
+              placeholderTextColor={t.textMuted}
+              onChangeText={(v) => setLoad(i, { description: v })}
+              style={[input, { flexGrow: 1, minWidth: 180 }]}
+            />
+            <TextInput
+              value={l.va ? String(l.va) : ''}
+              placeholder="VA"
+              placeholderTextColor={t.textMuted}
+              onChangeText={(v) => setLoad(i, { va: Number(v) || 0 })}
+              style={[input, { width: 80 }]}
+            />
+            <TextInput
+              value={String(l.breakerA)}
+              placeholder="AT"
+              placeholderTextColor={t.textMuted}
+              onChangeText={(v) => setLoad(i, { breakerA: Number(v) || 0 })}
+              style={[input, { width: 64 }]}
+            />
+            <TextInput
+              value={l.wire}
+              placeholder="Wire"
+              placeholderTextColor={t.textMuted}
+              onChangeText={(v) => setLoad(i, { wire: v })}
+              style={[input, { width: 200 }]}
+            />
             <SmallButton label="Remove" onPress={() => onChange({ loads: plan.loads.filter((_, k) => k !== i) })} />
           </View>
         ))}
