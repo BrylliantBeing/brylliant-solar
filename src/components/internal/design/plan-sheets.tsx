@@ -628,7 +628,7 @@ function sunLines(r: DesignResult): string[] {
       (f) =>
         `  ${f.id ? `ROOF ${f.id} ${f.pitchDeg}° FACING ${compass(f.azimuthDeg ?? 0)}` : 'FLAT'}: ${f.panels} PCS, ${f.kwhPerYear.toLocaleString('en-PH')} KWH/YR`,
     ),
-    `  PVGIS 2005–2023 LESS ${r.sun.deratePct}%; SHADING NOT INCLUDED`,
+    `  PVGIS 2005–2023 × ${r.sun.calibration.factor.toFixed(3)} (${r.sun.calibration.auto ? 'CALIBRATED TO A LOGGED LOCAL ARRAY' : 'FIXED FACTOR'}); SHADING NOT INCLUDED`,
   ];
 }
 

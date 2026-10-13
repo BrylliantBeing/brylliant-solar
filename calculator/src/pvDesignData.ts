@@ -7,6 +7,49 @@
  * Everything here is data: change a figure here, not in the engine.
  */
 
+import { ZAMBOANGA_SUN_PROFILE } from './zamboangaSunProfile';
+
+/* ------------------------------------------------------------------ *
+ * Reference array
+ *
+ * The logged system every yield prediction is calibrated against: PVGIS is
+ * asked what this array should have made over the logged months, and the
+ * ratio of measured to predicted is applied to every roof. Its tilt and facing
+ * must be the real ones, measured on the frame, or that error is copied into
+ * every design.
+ * ------------------------------------------------------------------ */
+
+export const REFERENCE_ARRAY = {
+  description: '3 × 650 W, Zamboanga',
+  kwp: 1.95,
+  /** Measured on the panel frame, 2026-10-13 */
+  tiltDeg: 20,
+  /** Faces south */
+  azimuthDeg: 180,
+  /** PVGIS weather is on a ~25 km grid, so anywhere in the city gives the same answer */
+  lat: 6.92,
+  lng: 122.08,
+  /** The logged window, from the header of zamboangaSunProfile.ts */
+  from: '2026-06-08',
+  to: '2026-09-27',
+};
+
+/** Measured kWh per kWp per day, by month, from the inverter log. */
+export const referenceMeasured = (): number[] => ZAMBOANGA_SUN_PROFILE.monthly.map((hours) => hours.reduce((a, b) => a + b, 0));
+
+/**
+ * Logged days per month. The profile records them from the next rebuild on;
+ * until then they are counted from the logged window.
+ */
+export function referenceDays(): number[] {
+  if (ZAMBOANGA_SUN_PROFILE.measuredDays) return ZAMBOANGA_SUN_PROFILE.measuredDays;
+  const days = new Array(12).fill(0);
+  for (let t = Date.parse(`${REFERENCE_ARRAY.from}T00:00:00Z`); t <= Date.parse(`${REFERENCE_ARRAY.to}T00:00:00Z`); t += 86400000) {
+    days[new Date(t).getUTCMonth()] += 1;
+  }
+  return days;
+}
+
 /* ------------------------------------------------------------------ *
  * Panels
  * ------------------------------------------------------------------ */
@@ -115,7 +158,40 @@ const hyxi = (model: string, maxDcW: number, nominalAcW: number, maxApparentVA: 
   dimensionsMm: '340 × 360 × 136',
 });
 
+/**
+ * HYXi HYX-S(7-12)K-S, datasheet V1.0-202404 AU (calculator/src). Single phase,
+ * one string per MPPT; the 7K and 8K have two trackers, the rest three. Not the
+ * -S2 range above, which has two trackers with two inputs on the second.
+ */
+const hyxiS = (model: string, trackers: number, maxDcW: number, nominalAcW: number, maxApparentVA: number, maxAcA: number): InverterSpec => ({
+  model,
+  maxDcV: 600,
+  nominalDcV: 360,
+  startupV: 80,
+  mpptMinV: 40,
+  mpptMaxV: 560,
+  fullLoadMinV: 200,
+  fullLoadMaxV: 500,
+  mppts: Array.from({ length: trackers }, () => ({ maxInputA: 20, maxIscA: 24, inputs: 1 })),
+  maxDcW,
+  nominalAcW,
+  maxApparentVA,
+  nominalAcV: 230,
+  frequencyHz: '50/60',
+  // At 230 V
+  maxAcA,
+  powerFactor: '0.8 leading – 0.8 lagging',
+  weightKg: 23,
+  dimensionsMm: '522 × 416 × 162.5',
+});
+
+/** The first entry is what a newly placed inverter starts as. */
 export const INVERTERS: InverterSpec[] = [
+  hyxiS('HYXi HYX-S10K-S', 3, 16000, 10000, 11000, 47.9),
+  hyxiS('HYXi HYX-S7K-S', 2, 11200, 7000, 7700, 33.4),
+  hyxiS('HYXi HYX-S8K-S', 2, 12800, 8000, 8800, 38.3),
+  hyxiS('HYXi HYX-S9K-S', 3, 14400, 9000, 9900, 43),
+  hyxiS('HYXi HYX-S12K-S', 3, 19200, 12000, 13200, 57.42),
   hyxi('HYXi HYX-S10K-S2', 20000, 10000, 10000, 45.5),
   hyxi('HYXi HYX-S8K-S2', 16000, 8000, 8800, 40),
   hyxi('HYXi HYX-S10K5-S2', 21000, 10500, 10500, 47.7),

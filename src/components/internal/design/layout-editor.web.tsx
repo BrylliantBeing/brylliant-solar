@@ -1210,10 +1210,19 @@ export function LayoutEditor({
                 onChange={(v) => setStringMppt(s.id, { inverterId: v })}
               />
               <Choice
-                options={[0, 1].map((m) => ({
-                  value: String(m),
-                  label: `MPPT${m + 1}`,
-                }))}
+                // As many trackers as the string's inverter has, and the current one even if it has fewer (flagged by the engine)
+                options={Array.from(
+                  {
+                    length: Math.max(
+                      (
+                        INVERTERS.find((m) => m.model === layout.inverters.find((i) => i.id === s.inverterId)?.model) ??
+                        INVERTERS[0]
+                      ).mppts.length,
+                      s.mppt + 1,
+                    ),
+                  },
+                  (_, m) => ({ value: String(m), label: `MPPT${m + 1}` }),
+                )}
                 value={String(s.mppt)}
                 onChange={(v) => setStringMppt(s.id, { mppt: Number(v) })}
               />

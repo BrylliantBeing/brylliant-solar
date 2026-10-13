@@ -1,4 +1,4 @@
-import { calculateDesign, type DesignResult } from '@calculator/pvDesign';
+import { calculateDesign, DESIGN_DEFAULTS, type DesignResult } from '@calculator/pvDesign';
 import { JINKO_725 } from '@calculator/pvDesignData';
 import { Link, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
@@ -132,7 +132,10 @@ function Designer({ projectId }: { projectId: number }) {
     };
   }, [projectId]);
 
-  const sunData = useYields(doc?.site ? siteCenter(doc.site) : null, doc?.layout.roofs);
+  const sunData = useYields(doc?.site ? siteCenter(doc.site) : null, doc?.layout.roofs, {
+    tiltDeg: doc?.inputs.settings.referenceTiltDeg ?? DESIGN_DEFAULTS.referenceTiltDeg,
+    azimuthDeg: doc?.inputs.settings.referenceAzimuthDeg ?? DESIGN_DEFAULTS.referenceAzimuthDeg,
+  });
   const result: DesignResult | null = useMemo(
     () =>
       doc

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  autoAssign, autoRotation, calculateDesign, faceAt, heightAboveEave, panelArray, panelCorners, pvgisAspect, refitFace,
+  autoAssign, autoRotation, calculateDesign, faceAt, heightAboveEave, panelArray, panelCorners, pvgisAspect, refitFace, calibrate, calibrationFor,
   shortCircuitAnalysis, sunAnalysis, voltageDrop, type Layout, type LayoutPanel, type RoofFace, type StringDef,
 } from '../src/pvDesign';
-import { JINKO_725 } from '../src/pvDesignData';
+import { JINKO_725, referenceDays, referenceMeasured } from '../src/pvDesignData';
 
 const close = (actual: number, expected: number, tol = 0.01) =>
   assert.ok(Math.abs(actual - expected) <= tol, `${actual} is not within ${tol} of ${expected}`);
@@ -249,7 +249,7 @@ test('PVGIS aspect: N 180, E −90, S 0, W 90', () => {
 
 // ── Sun analysis ──────────────────────────────────────────────
 
-test('sun: 45° north at 2.84 PVGIS becomes 2.485 after the 12.5% derate, ~30% under the best roof', () => {
+test('sun: a fixed ×0.875 turns 45° north at 2.84 into 2.485, ~30% under the best roof', () => {
   const north: RoofFace = { ...southFace(45, 'N'), azimuthDeg: 0 };
   const layout: Layout = {
     panels: [one(-2, 0), one(2, 0), one(30, 0)],
@@ -261,16 +261,63 @@ test('sun: 45° north at 2.84 PVGIS becomes 2.485 after the 12.5% derate, ~30% u
     roofs: [north],
   };
   const m = (d: number) => Array(12).fill(d);
-  const sun = sunAnalysis(layout, JINKO_725, { faces: { N: m(2.84) }, flat: m(4.05), best: { pitchDeg: 10, azimuthDeg: 180, monthly: m(4.08) } }, 12.5);
+  const yields = { faces: { N: m(2.84) }, flat: m(4.05), best: { pitchDeg: 10, azimuthDeg: 180, monthly: m(4.08) }, reference: m(3.5) };
+  const cal = calibrationFor(yields, { referenceTiltDeg: 45, referenceAzimuthDeg: 180, calibrationOverride: 0.875 });
+  assert.equal(cal.auto, false);
+  const sun = sunAnalysis(layout, JINKO_725, yields, cal);
   const onNorth = sun.faces.find((f) => f.id === 'N')!;
   close(onNorth.perKwpDay, 2.485, 0.005);
   assert.equal(onNorth.panels, 2);
   close(onNorth.vsBestPct, (2.84 / 4.08 - 1) * 100, 0.1);
-  const flat = sun.faces.find((f) => f.id === '')!;
-  assert.equal(flat.panels, 1);
-  close(sun.bestPerKwpDay, 4.08 * 0.875, 0.005);
-  // 1.45 kWp × 2.485 + 0.725 kWp × 3.544 a day, for a year
+  assert.equal(sun.faces.find((f) => f.id === '')!.panels, 1);
   close(sun.kwhPerYear, (1.45 * 2.485 + 0.725 * 4.05 * 0.875) * 365.25, 2);
-  const warn = calculateDesign({ layout, strings: [], yields: { faces: { N: m(2.84) }, flat: m(4.05), best: { pitchDeg: 10, azimuthDeg: 180, monthly: m(4.08) } } });
-  assert.ok(warn.warnings.some((w) => w.startsWith('Roof N (45°, faces N) yields 30% less')));
+  const r = calculateDesign({ layout, strings: [], yields, settings: { calibrationOverride: 0.875 } });
+  assert.ok(r.warnings.some((w) => w.startsWith('Roof N (45°, faces N) yields 30% less')));
+});
+
+// ── Calibration against the logged 1.95 kWp array ─────────────
+
+/** PVGIS (loss 14%) for Zamboanga, June–September, as fetched while building this. */
+const pvgisJunSep = (jun: number, jul: number, aug: number, sep: number) => [0, 0, 0, 0, 0, jun, jul, aug, sep, 0, 0, 0];
+
+test('the logged window is June 8 – September 27: 23 + 31 + 31 + 27 days', () => {
+  assert.deepEqual(referenceDays(), [0, 0, 0, 0, 0, 23, 31, 31, 27, 0, 0, 0]);
+});
+
+test('calibration reproduces the measured array exactly, whatever PVGIS says', () => {
+  const pvgis = pvgisJunSep(3.37, 3.41, 3.87, 3.99); // 15° south
+  const c = calibrate(referenceMeasured(), referenceDays(), pvgis);
+  close(c.pvgis * c.factor, c.measured, 1e-9);
+  close(c.factor, 0.96, 0.01);
+});
+
+test('45° south does not fit the log: ×1.35, flagged', () => {
+  const m = (d: number) => Array(12).fill(d);
+  const yields = { faces: {}, flat: m(4.05), best: { pitchDeg: 8, azimuthDeg: 174, monthly: m(4.08) }, reference: pvgisJunSep(2.1, 2.21, 2.77, 3.29) };
+  const cal = calibrationFor(yields, { referenceTiltDeg: 45, referenceAzimuthDeg: 180, calibrationOverride: 0 });
+  close(cal.factor, 1.35, 0.01);
+  const { layout, strings } = site();
+  const r = calculateDesign({ layout, strings, yields });
+  assert.ok(r.warnings.some((w) => w.startsWith('Sun calibration is ×1.35')), r.warnings.join(' | '));
+  close(r.sun!.calibration.factor, cal.factor, 1e-9);
+});
+
+// ── HYX-S10K-S: three trackers, one string each ───────────────
+
+test('8 + 7 + 7 on the HYX-S10K-S, one string per MPPT: no tracker warnings', () => {
+  const { layout, strings } = site({ inverters: [{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 6, floor: 1 }] });
+  const r = calculateDesign({ layout, strings: strings.map((s, i) => ({ ...s, mppt: i })) });
+  assert.deepEqual(r.mppts.map((m) => [m.mppt, m.impA, m.maxInputA, m.maxIscA]), [[0, 17.69, 20, 24], [1, 17.69, 20, 24], [2, 17.69, 20, 24]]);
+  assert.ok(!r.warnings.some((w) => w.includes('MPPT')), r.warnings.join(' | '));
+  // 15.95 kWp against its 16 kW DC limit: under, just
+  assert.ok(!r.warnings.some((w) => w.includes('DC input')));
+  const ac = r.circuits.find((c) => c.kind === 'ac')!;
+  close(ac.designA, 1.25 * 47.9);
+  assert.equal(ac.breakerA, 60);
+});
+
+test('two strings on one HYX-S10K-S tracker are flagged: it has one input per MPPT', () => {
+  const { layout, strings } = site({ inverters: [{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 6, floor: 1 }] });
+  const r = calculateDesign({ layout, strings });
+  assert.ok(r.warnings.some((w) => w.startsWith('INV1 MPPT2 has 2 strings but only 1 input')));
 });

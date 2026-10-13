@@ -14,7 +14,9 @@ const f = (n: number, dp = 1) => n.toLocaleString('en-PH', { maximumFractionDigi
 /** Settings worth editing per job; the rest stay at DESIGN_DEFAULTS. */
 const SETTING_FIELDS: { key: keyof DesignSettings; label: string; unit: string; help?: string }[] = [
   { key: 'minAmbientC', label: 'Coldest morning', unit: '°C', help: 'Sets the cold-corrected Voc.' },
-  { key: 'yieldDeratePct', label: 'Sun derate', unit: '%', help: 'Off PVGIS, to match what local arrays measure.' },
+  { key: 'referenceTiltDeg', label: 'Reference array tilt', unit: '°', help: 'Your logged 1.95 kWp array, measured on the frame.' },
+  { key: 'referenceAzimuthDeg', label: 'Reference array facing', unit: '°', help: '0 N, 90 E, 180 S, 270 W.' },
+  { key: 'calibrationOverride', label: 'Fixed sun factor', unit: '×', help: '0 = calibrate from the reference array.' },
   { key: 'vdropLimitPct', label: 'Voltage drop limit', unit: '%' },
   { key: 'minDcMm2', label: 'Smallest PV wire', unit: 'mm²' },
   { key: 'slackPct', label: 'Slack on runs', unit: '%' },
@@ -196,6 +198,7 @@ function SunPanel({ result: r, sunData }: { result: DesignResult; sunData?: SunD
     );
   }
   const vs = (pct: number) => (Math.abs(pct) < 0.5 ? 'best' : `${pct > 0 ? '+' : ''}${f(pct, 0)}%`);
+  const cal = sun.calibration;
   return (
     <Panel title="Sun" right={sunData?.loading ? <ThemedText type="small" themeColor="textMuted">Updating…</ThemedText> : undefined}>
       <KeyValue label="Expected generation" value={`${f(sun.kwhPerYear, 0)} kWh/yr`} sub={`${f(sun.kwhPerDay)} kWh a day on average`} total />
@@ -218,8 +221,17 @@ function SunPanel({ result: r, sunData }: { result: DesignResult; sunData?: SunD
         ])}
       />
       <Table head={['', ...MONTHS]} rows={[['kWh', ...sun.monthlyKwh.map((k) => f(k, 0))]]} />
+      <KeyValue
+        label="Calibration"
+        value={`× ${f(cal.factor, 3)}`}
+        sub={
+          cal.auto
+            ? `Reference array (${cal.tiltDeg}° facing ${compass(cal.azimuthDeg)}), ${cal.window}, ${cal.days} days: measured ${f(cal.measuredPerKwpDay, 2)}, PVGIS ${f(cal.pvgisPerKwpDay, 2)}, so predicted ${f(cal.pvgisPerKwpDay * cal.factor, 2)} kWh/kWp/day`
+            : 'Fixed in Design settings, not calibrated'
+        }
+      />
       <ThemedText type="small" themeColor="textMuted">
-        {`${sunData?.source ?? 'PVGIS'} average, less ${sun.deratePct}% so a good south roof matches the 3.5 kWh/kWp/day measured locally. Shading from trees and neighbours is not included.`}
+        {`${sunData?.source ?? 'PVGIS'} average × the calibration. Shading from trees and neighbours is not included.`}
       </ThemedText>
     </Panel>
   );

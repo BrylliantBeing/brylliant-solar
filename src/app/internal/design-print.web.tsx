@@ -1,4 +1,4 @@
-import { calculateDesign } from '@calculator/pvDesign';
+import { calculateDesign, DESIGN_DEFAULTS } from '@calculator/pvDesign';
 import { JINKO_725 } from '@calculator/pvDesignData';
 import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -48,7 +48,11 @@ export default function DesignPrint() {
         const doc = { site: design.site, layout: design.layout, inputs: design.inputs };
         // The sheets print without the generation figures if PVGIS is down.
         const c = siteCenter(doc.site);
-        const yields = await loadYields(c.lat, c.lng, doc.layout.roofs)
+        const st = doc.inputs.settings;
+        const yields = await loadYields(c.lat, c.lng, doc.layout.roofs, {
+          tiltDeg: st.referenceTiltDeg ?? DESIGN_DEFAULTS.referenceTiltDeg,
+          azimuthDeg: st.referenceAzimuthDeg ?? DESIGN_DEFAULTS.referenceAzimuthDeg,
+        })
           .then((r) => r.yields)
           .catch(() => null);
         // Recalculated rather than read back, so the drawings match the current engine.

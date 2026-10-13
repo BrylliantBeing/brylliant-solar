@@ -102,6 +102,8 @@ const json = JSON.stringify(
   {
     monthly: rounded,
     source: result.profile.source,
+    // Which months are real: the design tool calibrates PVGIS against these only
+    measuredDays: result.daysUsedByMonth,
     spread: { weights: spread.weights, levels: spread.levels.map((m) => m.map((h) => h.map(round5))) },
   },
   null,

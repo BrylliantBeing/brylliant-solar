@@ -22,6 +22,9 @@ import {
   INVERTERS,
   JINKO_725,
   KAIC_RATINGS,
+  REFERENCE_ARRAY,
+  referenceDays,
+  referenceMeasured,
   type InverterSpec,
   type PanelSpec,
 } from './pvDesignData';
@@ -111,11 +114,11 @@ export type DesignSettings = {
   transformerZPct: number;
   serviceDropM: number;
   serviceDropMm2: number;
-  /**
-   * Taken off PVGIS's yield (already net of its 14% system loss). 12.5% makes
-   * PVGIS's best south roof (4.08) match the 3.5 kWh/kWp/day measured locally.
-   */
-  yieldDeratePct: number;
+  /** The logged reference array's real tilt and facing; calibration depends on them */
+  referenceTiltDeg: number;
+  referenceAzimuthDeg: number;
+  /** A fixed factor on PVGIS instead of the measured calibration; 0 = calibrate from the reference array */
+  calibrationOverride: number;
 };
 
 export const DESIGN_DEFAULTS: DesignSettings = {
@@ -143,7 +146,9 @@ export const DESIGN_DEFAULTS: DesignSettings = {
   transformerZPct: 2.5,
   serviceDropM: 30,
   serviceDropMm2: 14,
-  yieldDeratePct: 12.5,
+  referenceTiltDeg: REFERENCE_ARRAY.tiltDeg,
+  referenceAzimuthDeg: REFERENCE_ARRAY.azimuthDeg,
+  calibrationOverride: 0,
 };
 
 /** A hand-picked size for one circuit, keyed by Circuit.id. */
@@ -164,6 +169,23 @@ export type Yields = {
   faces: Record<string, number[]>;
   flat: number[];
   best: { pitchDeg: number; azimuthDeg: number; monthly: number[] };
+  /** The reference array's orientation, for calibration */
+  reference: number[];
+};
+
+/** How PVGIS was brought into line with what the reference array actually made. */
+export type Calibration = {
+  /** Multiplies every PVGIS yield */
+  factor: number;
+  /** false when a fixed factor was typed in */
+  auto: boolean;
+  /** Over the logged months, weighted by logged days: what the array made, and what PVGIS says it should have */
+  measuredPerKwpDay: number;
+  pvgisPerKwpDay: number;
+  days: number;
+  tiltDeg: number;
+  azimuthDeg: number;
+  window: string;
 };
 
 /* ------------------------------------------------------------------ *
@@ -273,12 +295,12 @@ export type SunFace = {
   azimuthDeg: number | null;
   panels: number;
   kwp: number;
-  /** After the derate */
+  /** After calibration */
   perKwpDay: number;
   kwhPerDay: number;
   kwhPerYear: number;
   monthlyKwh: number[];
-  /** Against the best orientation at the site, after the same derate; negative = worse */
+  /** Against the best orientation at the site; negative = worse */
   vsBestPct: number;
 };
 
@@ -290,7 +312,7 @@ export type SunResult = {
   bestPerKwpDay: number;
   best: { pitchDeg: number; azimuthDeg: number };
   monthlyKwh: number[];
-  deratePct: number;
+  calibration: Calibration;
 };
 
 /* ------------------------------------------------------------------ *
@@ -583,7 +605,16 @@ export function calculateDesign(input: DesignInput): DesignResult {
     }).length;
     if (over) warnings.push(`${over} panel${over === 1 ? ' hangs' : 's hang'} over the edge of ${over === 1 ? 'its' : 'their'} roof face.`);
   }
-  const sun = input.yields ? sunAnalysis(layout, panel, input.yields, s.yieldDeratePct) : null;
+  let sun: SunResult | null = null;
+  if (input.yields) {
+    const cal = calibrationFor(input.yields, s);
+    sun = sunAnalysis(layout, panel, input.yields, cal);
+    if (cal.auto && (cal.factor < 0.8 || cal.factor > 1.1)) {
+      warnings.push(
+        `Sun calibration is ×${round(cal.factor, 2)}: the reference array made ${round(cal.measuredPerKwpDay, 2)} kWh/kWp/day but PVGIS expects ${round(cal.pvgisPerKwpDay, 2)} at ${cal.tiltDeg}° facing ${compass(cal.azimuthDeg)}. Outside 0.8–1.1 the reference tilt or facing is probably wrong; measure them on the panel frame.`,
+      );
+    }
+  }
   for (const f of sun?.faces ?? []) {
     if (f.id && f.vsBestPct < -10) {
       warnings.push(
@@ -1039,12 +1070,39 @@ const DAYS = [31, 28.25, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const yearly = (monthly: number[]) => monthly.reduce((a, d, i) => a + d * DAYS[i], 0);
 
 /**
- * Expected generation by roof face: PVGIS kWh/kWp/day for each face's pitch
- * and facing, less the derate, times the kWp on it. Panels on no face use the
- * flat-roof figures.
+ * Measured ÷ PVGIS for the reference array, over the months it was logged,
+ * each month weighted by its logged days. By construction the reference array
+ * is then predicted exactly for those months.
  */
-export function sunAnalysis(layout: Layout, panel: PanelSpec, yields: Yields, deratePct: number): SunResult {
-  const keep = 1 - deratePct / 100;
+export function calibrate(measured: number[], days: number[], pvgis: number[]): { factor: number; measured: number; pvgis: number; days: number } {
+  const n = days.reduce((a, d) => a + d, 0);
+  const m = measured.reduce((a, v, i) => a + v * days[i], 0);
+  const p = pvgis.reduce((a, v, i) => a + v * days[i], 0);
+  return { factor: p > 0 ? m / p : 1, measured: n ? m / n : 0, pvgis: n ? p / n : 0, days: n };
+}
+
+export function calibrationFor(yields: Yields, s: Pick<DesignSettings, 'referenceTiltDeg' | 'referenceAzimuthDeg' | 'calibrationOverride'>): Calibration {
+  const c = calibrate(referenceMeasured(), referenceDays(), yields.reference);
+  const fixed = s.calibrationOverride > 0;
+  return {
+    factor: round(fixed ? s.calibrationOverride : c.factor, 4),
+    auto: !fixed,
+    measuredPerKwpDay: round(c.measured, 3),
+    pvgisPerKwpDay: round(c.pvgis, 3),
+    days: c.days,
+    tiltDeg: s.referenceTiltDeg,
+    azimuthDeg: s.referenceAzimuthDeg,
+    window: `${REFERENCE_ARRAY.from} to ${REFERENCE_ARRAY.to}`,
+  };
+}
+
+/**
+ * Expected generation by roof face: PVGIS kWh/kWp/day for each face's pitch
+ * and facing, times the calibration factor, times the kWp on it. Panels on no
+ * face use the flat-roof figures.
+ */
+export function sunAnalysis(layout: Layout, panel: PanelSpec, yields: Yields, calibration: Calibration): SunResult {
+  const keep = calibration.factor;
   const groups = new Map<string, LayoutPanel[]>();
   for (const p of layout.panels) {
     const id = faceAt(layout.roofs, p)?.id ?? '';
@@ -1085,6 +1143,6 @@ export function sunAnalysis(layout: Layout, panel: PanelSpec, yields: Yields, de
     bestPerKwpDay: round(bestPerKwpDay, 3),
     best: { pitchDeg: yields.best.pitchDeg, azimuthDeg: yields.best.azimuthDeg },
     monthlyKwh: DAYS.map((_, i) => round(faces.reduce((a, f) => a + f.monthlyKwh[i], 0), 1)),
-    deratePct,
+    calibration,
   };
 }

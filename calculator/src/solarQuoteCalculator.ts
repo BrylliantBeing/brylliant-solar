@@ -42,6 +42,8 @@ export interface SunProfile {
   isPlaceholder?: boolean;
   /** How power varies within each hour. Without it, clipping is judged on hourly averages and understated. */
   spread?: SunSpread;
+  /** Days of logged data behind each month; 0 means the month was filled with the all-month average */
+  measuredDays?: number[];
 }
 
 /**
