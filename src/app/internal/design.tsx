@@ -98,7 +98,8 @@ function ProjectPicker() {
       <Card>
         {projects?.map((p) => (
           <Link key={p.id} href={{ pathname: '/internal/design', params: { project: String(p.id) } }} asChild>
-            <Pressable style={[styles.pick, { borderBottomColor: t.line }]}>
+            {/* Link's Slot rejects style arrays, so flatten first. */}
+            <Pressable style={StyleSheet.flatten([styles.pick, { borderBottomColor: t.line }])}>
               <ThemedText type="smallBold">{p.customer}</ThemedText>
               <ThemedText type="small" themeColor="textMuted" numberOfLines={1}>
                 {p.address || 'No address'}
