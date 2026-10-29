@@ -269,7 +269,7 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
   {
     title: 'Job costs',
     numbers: [
-      { key: 'mountingPerPanelUsd', label: 'Rails & mounts', unit: 'US$ per panel', help: 'US$2,500 for 100 panels' },
+      { key: 'mountingPerPanelUsd', label: 'Rails & mounts', unit: 'US$ per panel', help: 'US$8,910 for 396 panels' },
       { key: 'pvCableRollUsd', label: 'PV cable roll', unit: 'US$ each' },
       { key: 'pvCableRollMeters', label: 'PV cable roll length', unit: 'm' },
       {
@@ -280,12 +280,13 @@ export const ASSUMPTION_GROUPS: { title: string; numbers: NumberField[]; toggles
       },
       { key: 'panelsPerString', label: 'Panels per string', unit: 'panels' },
       { key: 'laborCost', label: 'Labour', unit: '₱ per job' },
-      { key: 'freightPerContainer', label: 'Freight', unit: '₱ per container', help: 'Panels and rails' },
+      { key: 'shippingPerShipmentUsd', label: 'Shipping', unit: 'US$ per shipment', help: 'Supplier freight to Manila port (CIF)' },
+      { key: 'customsPerShipment', label: 'Customs', unit: '₱ per shipment', help: 'Customs fees at Manila port' },
       {
-        key: 'panelsPerContainer',
-        label: 'Panels per container',
+        key: 'panelsPerShipment',
+        label: 'Panels per shipment',
         unit: 'panels',
-        help: 'Freight is shared by panel count; 165 = 5 pallets of 33',
+        help: 'Shipping and customs are shared by panel count',
       },
       { key: 'netMeteringCost', label: 'Net metering', unit: '₱ per job', help: 'Application with ZAMCELCO' },
       { key: 'miscCost', label: 'Miscellaneous', unit: '₱ per job' },
@@ -416,6 +417,7 @@ export function quoteSummaryText(q: QuoteResult, customer: string): string {
       : [`Mounting & cabling ${peso(q.pricing.mountingCabling)}`]),
     `Labour ${peso(q.pricing.labor)}`,
     ...(q.pricing.freight !== undefined ? [`Freight ${peso(q.pricing.freight)}`] : []),
+    ...(q.pricing.customs !== undefined ? [`Customs ${peso(q.pricing.customs)}`] : []),
     ...(q.pricing.electricalParts ? [`Electrical parts ${peso(q.pricing.electrical)}`] : []),
     // Quotes saved before net metering was itemised have it inside misc.
     ...(q.pricing.netMetering !== undefined ? [`Net metering ${peso(q.pricing.netMetering)}`] : []),

@@ -101,8 +101,9 @@ export interface QuoteDefaults {
   pvCableRollMeters: number;        // m per roll
   pvCableMetersPerString: number;   // m of PV cable per string (red + black, array to inverter)
   panelsPerString: number;          // panels wired in series per string
-  freightPerContainer: number;      // PHP per container, panels and rails
-  panelsPerContainer: number;       // panels one container carries; freight is shared per panel
+  shippingPerShipmentUsd: number;   // USD per shipment, the supplier's freight to Manila port (CIF)
+  customsPerShipment: number;       // PHP per shipment, customs fees at Manila port
+  panelsPerShipment: number;        // panels one shipment carries; shipping and customs are shared per panel
   netMeteringCost: number;          // PHP per job, net-metering application
   electricalParts: ElectricalPart[]; // breakers, wire, earthing, conduit
   miscCost: number;                 // PHP per job
@@ -261,7 +262,7 @@ export interface QuoteResult {
   pricing: {
     usdToPhp: number;
     /** Hardware in USD, as the supplier prices it */
-    usd: { panels: number; inverters: number; batteries: number; mounting: number; pvCable: number };
+    usd: { panels: number; inverters: number; batteries: number; mounting: number; pvCable: number; freight: number };
     panels: number;
     inverters: number;
     batteries: number;
@@ -272,8 +273,10 @@ export interface QuoteResult {
     pvCableRolls: number;
     /** mounting + pvCable */
     mountingCabling: number;
-    /** The job's share of container freight, by panel count */
+    /** The job's share of the shipment's shipping to Manila port, by panel count */
     freight: number;
+    /** The job's share of the shipment's customs fees, by panel count */
+    customs: number;
     /** Sum of electricalParts */
     electrical: number;
     electricalParts: {
@@ -300,7 +303,7 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   electricityRate: 13.4668,
   generationCharge: 8.47,
   usdToPhp: 62.83, // fallback; the app fills in the live rate
-  panelPriceUsd: 91.65, // Jinko JKM725N-66HL5-BDV
+  panelPriceUsd: 90.84, // Jinko JKM725N-66HL5-BDV, Lovsun proforma LM26PK1002B
   panelWatts: 725,
   inverterPriceUsd: 720, // Growatt SPE12000ES
   inverterKw: 12,
@@ -309,13 +312,14 @@ export const ZAMBOANGA_DEFAULTS: QuoteDefaults = {
   batteryPriceUsd: 980,
   batteryUnitKwh: 10,
   laborCost: 20625,
-  mountingPerPanelUsd: 25, // US$2,500 of rails and mounts for 100 panels
-  pvCableRollUsd: 90,
+  mountingPerPanelUsd: 22.5, // US$8,910 metal-roof mounting for 396 panels, LM26PK1002B
+  pvCableRollUsd: 116, // 6 mm² at US$1.16/m, LM26PK1002B
   pvCableRollMeters: 100,
   pvCableMetersPerString: 40, // assumed ~20 m run from array to inverter, red + black; measure on site
   panelsPerString: 10, // 10 × 49.20 V Voc = 492 V, under the 550 V (hybrid) and 600 V (grid-tie) input limits
-  freightPerContainer: 350000, // 20 ft container, forwarder estimate
-  panelsPerContainer: 165, // 5 pallets of 33, with rails and hardware
+  shippingPerShipmentUsd: 270, // CIF Manila, LM26PK1002B
+  customsPerShipment: 0, // not quoted yet; the quote warns until it is set
+  panelsPerShipment: 396, // LM26PK1002B
   netMeteringCost: 1500,
   electricalParts: [
     // Estimates for a grid-tie job, 2 strings of 10 × 725 W into one 10 kW inverter. Ratings from the
@@ -1720,8 +1724,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
 
   // Pricing: supplier hardware in USD, converted to PHP; labour, net metering and misc are already PHP.
   if (!(cfg.usdToPhp > 0)) throw new Error('usdToPhp must be above 0.');
-  if (!(cfg.panelsPerString > 0) || !(cfg.pvCableRollMeters > 0) || !(cfg.panelsPerContainer > 0)) {
-    throw new Error('panelsPerString, pvCableRollMeters and panelsPerContainer must be above 0.');
+  if (!(cfg.panelsPerString > 0) || !(cfg.pvCableRollMeters > 0) || !(cfg.panelsPerShipment > 0)) {
+    throw new Error('panelsPerString, pvCableRollMeters and panelsPerShipment must be above 0.');
   }
   const strings = Math.ceil(panels / cfg.panelsPerString);
   const pvCableRolls = Math.ceil((strings * cfg.pvCableMetersPerString) / cfg.pvCableRollMeters);
@@ -1731,13 +1735,16 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
     batteries: battery.units * cfg.batteryPriceUsd,
     mounting: panels * cfg.mountingPerPanelUsd,
     pvCable: pvCableRolls * cfg.pvCableRollUsd,
+    freight: (panels * cfg.shippingPerShipmentUsd) / cfg.panelsPerShipment,
   };
   const panelCost = usd.panels * cfg.usdToPhp;
   const inverterCost = usd.inverters * cfg.usdToPhp;
   const batteryCost = usd.batteries * cfg.usdToPhp;
   const mountingCost = usd.mounting * cfg.usdToPhp;
   const pvCableCost = usd.pvCable * cfg.usdToPhp;
-  const freightCost = (panels * cfg.freightPerContainer) / cfg.panelsPerContainer;
+  const freightCost = usd.freight * cfg.usdToPhp;
+  const customsCost = (panels * cfg.customsPerShipment) / cfg.panelsPerShipment;
+  if (!(cfg.customsPerShipment > 0)) warnings.push('Customs fee is not set, so the price leaves it out.');
   const basisCount: Record<PartBasis, number> = { job: 1, inverter: inverterCount, string: strings, panel: panels };
   const electricalParts = cfg.electricalParts.map((part) => {
     const quantity = Math.ceil(part.qty * basisCount[part.per] - 1e-9);
@@ -1754,8 +1761,8 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       `(${num0(estimated.reduce((sum, part) => sum + part.total, 0))} PHP), not store quotes.`,
     );
   }
-  const total = panelCost + inverterCost + batteryCost + mountingCost + pvCableCost + freightCost + electricalCost +
-    cfg.laborCost + cfg.netMeteringCost + cfg.miscCost;
+  const total = panelCost + inverterCost + batteryCost + mountingCost + pvCableCost + freightCost + customsCost +
+    electricalCost + cfg.laborCost + cfg.netMeteringCost + cfg.miscCost;
 
   const months = sim.monthly.length;
   const needs = battery.needs;
@@ -1838,6 +1845,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
         batteries: round2(usd.batteries),
         mounting: round2(usd.mounting),
         pvCable: round2(usd.pvCable),
+        freight: round2(usd.freight),
       },
       panels: round2(panelCost),
       inverters: round2(inverterCost),
@@ -1847,6 +1855,7 @@ export function calculateQuote(input: CalculatorInput): QuoteResult {
       pvCableRolls,
       mountingCabling: round2(mountingCost + pvCableCost),
       freight: round2(freightCost),
+      customs: round2(customsCost),
       electrical: round2(electricalCost),
       electricalParts,
       labor: cfg.laborCost,

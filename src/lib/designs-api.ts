@@ -39,8 +39,8 @@ export type PlanSet = {
 export type DesignInputs = {
   settings: Partial<DesignSettings>;
   overrides: Record<string, CircuitOverride>;
-  /** String pattern the auto-assign uses, e.g. [8, 7, 7] */
-  pattern: number[];
+  /** Panels per string by inverter model, where it differs from the model's ideal pattern */
+  patterns?: Record<string, number[]>;
   plan: PlanSet;
 };
 

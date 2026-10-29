@@ -124,5 +124,5 @@ const styles = StyleSheet.create({
   bar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two },
   row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.two, borderBottomWidth: 1 },
   field: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: Radius.sm, paddingHorizontal: Spacing.two, width: 150 },
-  input: { flex: 1, paddingVertical: 6, textAlign: 'right' },
+  input: { flex: 1, minWidth: 0, paddingVertical: 6, textAlign: 'right' },
 });

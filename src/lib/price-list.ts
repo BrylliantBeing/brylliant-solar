@@ -63,7 +63,7 @@ const materials: PriceItem[] = [
     name: `PV cable ${c.mm2} mm², ${Q.pvCableRollMeters} m roll`,
     unit: 'roll',
     group: 'DC side',
-    defaultPhp: c.mm2 === 6 ? usd(Q.pvCableRollUsd) : null,
+    defaultPhp: c.mm2 === 6 ? usd(Q.pvCableRollUsd) : c.mm2 === 10 ? usd(1.62 * Q.pvCableRollMeters) : null, // 10 mm²: US$1.62/m, LM26PK1002B
   })),
   { key: 'mc4', name: 'MC4 connector pair', unit: 'pair', group: 'DC side', defaultPhp: part('MC4 pair, home runs') },
   ...DC_BREAKERS_A.map((a) => ({
@@ -198,10 +198,20 @@ const extras: PriceItem[] = [
   },
   {
     key: 'job-freight',
-    name: 'Container freight, share per panel',
+    name: 'Shipping to Manila, share per panel',
     unit: 'panel',
     group: 'Job costs',
-    defaultPhp: Math.round((Q.freightPerContainer / Q.panelsPerContainer) * 100) / 100,
+    defaultPhp: usd(Q.shippingPerShipmentUsd / Q.panelsPerShipment),
+    basis: 'panel',
+    qty: 1,
+  },
+  {
+    key: 'job-customs',
+    name: 'Customs, share per panel',
+    unit: 'panel',
+    group: 'Job costs',
+    // Unpriced until set, so a design names it rather than quietly leaving it out
+    defaultPhp: Q.customsPerShipment > 0 ? Math.round((Q.customsPerShipment / Q.panelsPerShipment) * 100) / 100 : null,
     basis: 'panel',
     qty: 1,
   },

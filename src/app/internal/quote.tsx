@@ -691,8 +691,16 @@ function Results({
         {q.pricing.freight !== undefined ? (
           <KeyValue
             label="Freight"
-            sub={`${q.panels.count} × ${peso(q.pricing.freight / Math.max(1, q.panels.count))} share of the container`}
+            sub={`${q.panels.count} × ${peso(q.pricing.freight / Math.max(1, q.panels.count))} share of the shipment to Manila`}
             value={peso(q.pricing.freight)}
+          />
+        ) : null}
+        {/* Quotes saved before customs was added have none. */}
+        {q.pricing.customs !== undefined ? (
+          <KeyValue
+            label="Customs"
+            sub={`${q.panels.count} × ${peso(q.pricing.customs / Math.max(1, q.panels.count))} share of the shipment`}
+            value={peso(q.pricing.customs)}
           />
         ) : null}
         {/* Quotes saved before the electrical parts list have none. */}

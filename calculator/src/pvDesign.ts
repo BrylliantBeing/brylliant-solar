@@ -421,11 +421,19 @@ export function calculateDesign(input: DesignInput): DesignResult {
     warnings.push(`${unassignedPanels} panel${unassignedPanels === 1 ? ' is' : 's are'} not on a string.`);
   }
 
+  /** The roof faces a string's panels sit on; '' is flat roof */
+  const facesOf = (id: string) => [...new Set((stringPanels.get(id) ?? []).map((p) => faceAt(layout.roofs, p)?.id ?? ''))];
+  const faceName = (id: string) => (id ? `roof ${id}` : 'flat roof');
+
   for (const st of strings) {
     const inv = inverterById.get(st.inverterId);
     if (st.series === 0) {
       warnings.push(`String ${st.id} has no panels.`);
       continue;
+    }
+    const faces = facesOf(st.id);
+    if (faces.length > 1) {
+      warnings.push(`String ${st.id} runs across ${faces.map(faceName).join(' and ')}; panels facing different ways drag a string down to its weakest.`);
     }
     if (!inv) {
       warnings.push(`String ${st.id} is not connected to an inverter.`);
@@ -471,6 +479,10 @@ export function calculateDesign(input: DesignInput): DesignResult {
       }
       if (new Set(on.map((x) => x.series)).size > 1) {
         warnings.push(`${name}: parallel strings have different lengths (${on.map((x) => x.series).join(' and ')}); the shorter pulls the voltage down.`);
+      }
+      const faces = [...new Set(on.flatMap((x) => facesOf(x.id)))];
+      if (on.length > 1 && faces.length > 1) {
+        warnings.push(`${name}: its strings sit on ${faces.map(faceName).join(' and ')}; one tracker can only follow one facing.`);
       }
     });
     strings
@@ -898,6 +910,190 @@ export function autoAssign(panels: LayoutPanel[], pattern: { id: string; size: n
   const slots: (string | null)[] = [];
   for (const p of pattern) for (let k = 0; k < p.size; k += 1) slots.push(p.id);
   return panels.map((p) => ({ ...p, stringId: slots[i++] ?? null }));
+}
+
+/** A string to fill: where it lands and how many panels its pattern gives it. */
+export type StringSlot = StringDef & { size: number };
+
+const STRING_IDS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+/**
+ * The strings every inverter takes. A model's pattern (one typed for the
+ * design, else the model's ideal pattern) fills its MPPT inputs in order, so
+ * every HYX-S10K-S gets 8 + 7 + 7. Models with neither share the panels left
+ * over evenly across their inputs.
+ */
+export function stringPlan(inverters: LayoutInverter[], patterns: Record<string, number[]>, panelCount: number): StringSlot[] {
+  const specOf = (inv: LayoutInverter) => INVERTERS.find((x) => x.model === inv.model) ?? INVERTERS[0];
+  const inputsOf = (spec: InverterSpec) => spec.mppts.flatMap((m, i) => Array.from({ length: m.inputs }, () => i));
+  const patternOf = (inv: LayoutInverter) => {
+    const p = patterns[inv.model] ?? specOf(inv).idealPattern;
+    return p?.length ? p : null;
+  };
+  const fixed = inverters.reduce((a, inv) => a + (patternOf(inv)?.reduce((x, y) => x + y, 0) ?? 0), 0);
+  let left = Math.max(0, panelCount - fixed);
+  let inputsLeft = inverters.filter((inv) => !patternOf(inv)).reduce((a, inv) => a + inputsOf(specOf(inv)).length, 0);
+  const out: StringSlot[] = [];
+  for (const inv of inverters) {
+    const inputs = inputsOf(specOf(inv));
+    const sizes =
+      patternOf(inv) ??
+      inputs.map(() => {
+        const n = Math.ceil(left / inputsLeft);
+        left -= n;
+        inputsLeft -= 1;
+        return n;
+      });
+    sizes.forEach((size, i) => {
+      if (size <= 0) return;
+      out.push({ id: STRING_IDS[out.length] ?? `S${out.length + 1}`, inverterId: inv.id, mppt: inputs[Math.min(i, inputs.length - 1)] ?? 0, size });
+    });
+  }
+  return out;
+}
+
+/** Panels in wiring order: array by array, row by row, snaking back along every other row. */
+function snakeOrder(panels: LayoutPanel[]): LayoutPanel[] {
+  const arrayOf = (p: LayoutPanel) => p.rowId.split('-')[0];
+  const rows = new Map<string, LayoutPanel[]>();
+  for (const p of panels) rows.set(p.rowId, [...(rows.get(p.rowId) ?? []), p]);
+  const out: LayoutPanel[] = [];
+  for (const a of new Set(panels.map(arrayOf))) {
+    const mine = [...rows.values()].filter((r) => arrayOf(r[0]) === a);
+    const r0 = rad(mine[0][0].rot);
+    const along = (p: LayoutPoint) => p.x * Math.cos(r0) + p.y * Math.sin(r0);
+    const down = (r: LayoutPanel[]) => r.reduce((s, p) => s - p.x * Math.sin(r0) + p.y * Math.cos(r0), 0) / r.length;
+    mine
+      .sort((p, q) => down(p) - down(q))
+      .forEach((r, k) => out.push(...[...r].sort((p, q) => (k % 2 ? -1 : 1) * (along(p) - along(q)))));
+  }
+  return out;
+}
+
+/**
+ * Puts panels on strings so each MPPT sees one roof face. Faces go largest
+ * first, each onto the trackers that suit it best: an exact fit, else the
+ * largest it fills, else the smallest that holds it. Only what no tracker of
+ * its own can take spills into the room left on others (the design warns
+ * about the mix). Strings run in snake order along the rows; panels past the
+ * plan are left unassigned. Returns the panels in string order.
+ */
+export function assignStrings(panels: LayoutPanel[], roofs: RoofFace[] | undefined, slots: StringSlot[]): LayoutPanel[] {
+  type Unit = { slots: StringSlot[]; cap: number; panels: LayoutPanel[] };
+  const units: Unit[] = [];
+  for (const s of slots) {
+    const u = units.find((x) => x.slots[0].inverterId === s.inverterId && x.slots[0].mppt === s.mppt);
+    if (u) {
+      u.slots.push(s);
+      u.cap += s.size;
+    } else units.push({ slots: [s], cap: s.size, panels: [] });
+  }
+  const groups = new Map<string, LayoutPanel[]>();
+  for (const p of panels) {
+    const k = faceAt(roofs, p)?.id ?? '';
+    groups.set(k, [...(groups.get(k) ?? []), p]);
+  }
+  const spill: LayoutPanel[] = [];
+  for (const group of [...groups.values()].sort((a, b) => b.length - a.length)) {
+    let rest = snakeOrder(group);
+    while (rest.length) {
+      const n = rest.length;
+      const empty = units.filter((u) => !u.panels.length && u.cap > 0);
+      const pick =
+        empty.find((u) => u.cap === n) ??
+        empty.filter((u) => u.cap < n).sort((a, b) => b.cap - a.cap)[0] ??
+        empty.filter((u) => u.cap > n).sort((a, b) => a.cap - b.cap)[0];
+      if (!pick) break;
+      pick.panels = rest.slice(0, pick.cap);
+      rest = rest.slice(pick.cap);
+    }
+    spill.push(...rest);
+  }
+  for (const u of units) u.panels.push(...spill.splice(0, Math.max(0, u.cap - u.panels.length)));
+
+  const out: LayoutPanel[] = [];
+  for (const u of units) {
+    u.slots.reduce((i, s) => {
+      u.panels.slice(i, i + s.size).forEach((p) => out.push({ ...p, stringId: s.id }));
+      return i + s.size;
+    }, 0);
+  }
+  const strung = new Set(out.map((p) => p.id));
+  return [...out, ...panels.filter((p) => !strung.has(p.id)).map((p) => ({ ...p, stringId: null }))];
+}
+
+/** How squarely a face meets the noon sun at latitude `lat` (equinox), 1 = head on. Autoplace fills the best faces first. */
+export function noonSun(f: Pick<RoofFace, 'pitchDeg' | 'azimuthDeg'>, lat: number): number {
+  const t = rad(f.pitchDeg);
+  return Math.cos(t) * Math.cos(rad(lat)) - Math.sin(t) * Math.cos(rad(f.azimuthDeg)) * Math.sin(rad(lat));
+}
+
+/**
+ * Fills a roof face with panels in rows along its eave, from the eave up:
+ * each panel `setbackM` inside the outline (true distance on the roof) and
+ * clear of panels already on the face. Each row slides sideways to fit the
+ * most. With `max`, stops there, keeping the middle of the last row.
+ */
+export function fillFace(a: {
+  panel: PanelSpec;
+  face: RoofFace;
+  roofs: RoofFace[];
+  existing: LayoutPanel[];
+  orientation: Orientation;
+  gapM: number;
+  rowGapM: number;
+  setbackM: number;
+  idPrefix: string;
+  max?: number;
+}): LayoutPanel[] {
+  const { face, setbackM: sb } = a;
+  const c = Math.cos(rad(face.pitchDeg));
+  const u = downslope(face);
+  const v = { x: u.y, y: -u.x }; // across the slope, a panel's local x at autoRotation
+  // Roof coordinates: x across the slope, y true distance down it.
+  const toRoof = (p: LayoutPoint) => ({ x: p.x * v.x + p.y * v.y, y: (p.x * u.x + p.y * u.y) / c });
+  const toPlan = (q: LayoutPoint) => ({ x: q.x * v.x + q.y * c * u.x, y: q.x * v.y + q.y * c * u.y });
+  const outline = face.points.map(toRoof);
+  const rot = autoRotation(face);
+  const { w, h } = panelSize(a.panel, a.orientation);
+  const taken = a.existing
+    .filter((p) => faceAt(a.roofs, p)?.id === face.id)
+    .map((p) => {
+      const s = panelSize(a.panel, p.orientation);
+      const turned = Math.abs(((((p.rot - rot) % 180) + 180) % 180) - 90) < 45;
+      return { ...toRoof(p), w: turned ? s.h : s.w, h: turned ? s.w : s.h };
+    });
+  const fits = (q: LayoutPoint) =>
+    [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ].every(([sx, sy]) => pointInPolygon({ x: q.x + sx * (w / 2 + sb), y: q.y + sy * (h / 2 + sb) }, outline)) &&
+    faceAt(a.roofs, toPlan(q))?.id === face.id &&
+    !taken.some((t) => Math.abs(t.x - q.x) < (t.w + w) / 2 + a.gapM - 1e-9 && Math.abs(t.y - q.y) < (t.h + h) / 2 + a.gapM - 1e-9);
+
+  const xs = outline.map((q) => q.x);
+  const ys = outline.map((q) => q.y);
+  const [x0, x1, y0] = [Math.min(...xs), Math.max(...xs), Math.min(...ys)];
+  const step = w + a.gapM;
+  const max = a.max ?? Infinity;
+  const out: LayoutPanel[] = [];
+  for (let r = 0, y = Math.max(...ys) - sb - h / 2; y - h / 2 - sb >= y0 - 1e-9 && out.length < max; r += 1, y -= h + a.rowGapM) {
+    let best: LayoutPoint[] = [];
+    for (let k = 0; k < 12; k += 1) {
+      const row: LayoutPoint[] = [];
+      for (let x = x0 + sb + w / 2 + (k * step) / 12; x + w / 2 + sb <= x1 + 1e-9; x += step) if (fits({ x, y })) row.push({ x, y });
+      if (row.length > best.length) best = row;
+    }
+    const keep = Math.min(best.length, max - out.length);
+    const from = Math.floor((best.length - keep) / 2);
+    best.slice(from, from + keep).forEach((q, i) => {
+      const p = toPlan(q);
+      out.push({ id: `${a.idPrefix}-${r}-${i}`, x: p.x, y: p.y, rot, orientation: a.orientation, rowId: `${a.idPrefix}-${r}`, stringId: null });
+    });
+  }
+  return out;
 }
 
 /** Panels of a new array: rows × cols, centred on (x, y), rotated as one block. */

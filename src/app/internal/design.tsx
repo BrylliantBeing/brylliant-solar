@@ -61,7 +61,7 @@ function newDoc(project: DesignProject): Doc {
     inputs: {
       settings: {},
       overrides: {},
-      pattern: [8, 7, 7],
+      patterns: {},
       plan: {
         title: '',
         ownerName: project.customer,
@@ -357,9 +357,9 @@ function Designer({ projectId }: { projectId: number }) {
             site={doc.site}
             layout={doc.layout}
             panel={JINKO_725}
-            pattern={doc.inputs.pattern}
+            patterns={doc.inputs.patterns ?? {}}
             onChange={(layout) => set({ layout })}
-            onPatternChange={(pattern) => setInputs({ pattern })}
+            onPatternsChange={(patterns) => setInputs({ patterns })}
             onSiteChange={(site) => set({ site })}
           />
           <MessageList title="Check these" items={result.warnings} tone="warn" />

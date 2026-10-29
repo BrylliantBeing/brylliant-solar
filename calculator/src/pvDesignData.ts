@@ -122,6 +122,12 @@ export type InverterSpec = {
   fullLoadMinV: number;
   fullLoadMaxV: number;
   mppts: MpptSpec[];
+  /**
+   * Panels per string the business wires this model with, one entry per MPPT
+   * input in order. Every inverter of the model gets it; absent = split the
+   * panels evenly over the inputs.
+   */
+  idealPattern?: number[];
   maxDcW: number;
   nominalAcW: number;
   maxApparentVA: number;
@@ -187,7 +193,7 @@ const hyxiS = (model: string, trackers: number, maxDcW: number, nominalAcW: numb
 
 /** The first entry is what a newly placed inverter starts as. */
 export const INVERTERS: InverterSpec[] = [
-  hyxiS('HYXi HYX-S10K-S', 3, 16000, 10000, 11000, 47.9),
+  { ...hyxiS('HYXi HYX-S10K-S', 3, 16000, 10000, 11000, 47.9), idealPattern: [8, 7, 7] },
   hyxiS('HYXi HYX-S7K-S', 2, 11200, 7000, 7700, 33.4),
   hyxiS('HYXi HYX-S8K-S', 2, 12800, 8000, 8800, 38.3),
   hyxiS('HYXi HYX-S9K-S', 3, 14400, 9000, 9900, 43),

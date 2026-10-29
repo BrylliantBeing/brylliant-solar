@@ -267,21 +267,31 @@ test('Quote: USD hardware is converted at usdToPhp and the total adds up', () =>
   const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, usdToPhp: 60 });
   const p = q.pricing;
   assert.equal(p.usdToPhp, 60);
-  assert.equal(p.usd.panels, Math.round(q.panels.count * 91.65 * 100) / 100);
+  assert.equal(p.usd.panels, Math.round(q.panels.count * 90.84 * 100) / 100);
   assert.equal(p.usd.inverters, q.inverter.count * 720);
   assert.equal(p.usd.batteries, q.battery.units * 980);
-  assert.equal(p.panels, Math.round(q.panels.count * 91.65 * 60 * 100) / 100);
+  assert.equal(p.panels, Math.round(q.panels.count * 90.84 * 60 * 100) / 100);
   assert.equal(p.inverters, q.inverter.count * 720 * 60);
   assert.equal(p.batteries, q.battery.units * 980 * 60);
   const rolls = Math.ceil((Math.ceil(q.panels.count / 10) * 40) / 100);
   assert.equal(p.pvCableRolls, rolls);
-  assert.equal(p.usd.mounting, q.panels.count * 25);
-  assert.equal(p.usd.pvCable, rolls * 90);
-  const hardware = (q.panels.count * (91.65 + 25) + q.inverter.count * 720 + q.battery.units * 980 + rolls * 90) * 60;
+  assert.equal(p.usd.mounting, q.panels.count * 22.5);
+  assert.equal(p.usd.pvCable, rolls * 116);
+  const hardware = (q.panels.count * (90.84 + 22.5) + q.inverter.count * 720 + q.battery.units * 980 + rolls * 116) * 60;
   assert.equal(p.netMetering, 1500);
   assert.equal(p.misc, 0);
-  assert.ok(Math.abs(p.freight - (q.panels.count * 350000) / 165) < 0.01);
+  assert.ok(Math.abs(p.freight - (q.panels.count * 270 * 60) / 396) < 0.01);
+  assert.equal(p.customs, 0);
+  assert.ok(q.warnings.some((w) => w.startsWith('Customs fee is not set')));
   assert.ok(Math.abs(p.total - (hardware + p.freight + p.electrical + 20625 + 1500)) < 0.01);
+});
+
+test('Quote: customs per shipment is shared by panel count and added to the total', () => {
+  const base = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, usdToPhp: 60 });
+  const q = calculateQuote({ consumption: week(), outages: outageLog, sunProfile: realSun, usdToPhp: 60, customsPerShipment: 39600 });
+  assert.equal(q.pricing.customs, q.panels.count * 100);
+  assert.ok(Math.abs(q.pricing.total - (base.pricing.total + q.pricing.customs)) < 0.01);
+  assert.ok(!q.warnings.some((w) => w.startsWith('Customs fee is not set')));
 });
 
 test('Quote: electrical parts scale with strings, inverters and panels', () => {

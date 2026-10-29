@@ -1,13 +1,16 @@
 import {
-  autoAssign,
+  assignStrings,
   autoRotation,
   compass,
   downslope,
   faceAt,
+  fillFace,
+  noonSun,
   panelArray,
   panelSize,
   projection,
   refitFace,
+  stringPlan,
   type LayoutPanel,
   type LayoutPoint,
   type Orientation,
@@ -19,7 +22,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { ImageryCredit } from './imagery-credit';
-import { stringColor, stringsForPattern, type DesignLayout } from './strings';
+import { stringColor, type DesignLayout } from './strings';
 
 import { SmallButton } from '@/components/internal/quote-parts';
 import { ThemedText } from '@/components/themed-text';
@@ -45,7 +48,7 @@ const TOOLS: { tool: Tool; label: string; hint: string }[] = [
   {
     tool: 'array',
     label: 'Add panels',
-    hint: 'Set rows, columns and rotation below, then click where the middle of the array goes. On a roof face, rows follow the eave and panels are drawn as seen from above.',
+    hint: 'Set rows, columns and rotation below, then click where the middle of the array goes. On a roof face, rows follow the eave and panels are drawn as seen from above. Or Autoplace: fill the roof faces, sunniest first.',
   },
   {
     tool: 'string',
@@ -134,17 +137,17 @@ export function LayoutEditor({
   site,
   layout,
   panel,
-  pattern,
+  patterns,
   onChange,
-  onPatternChange,
+  onPatternsChange,
   onSiteChange,
 }: {
   site: DesignSite;
   layout: DesignLayout;
   panel: PanelSpec;
-  pattern: number[];
+  patterns: Record<string, number[]>;
   onChange: (layout: DesignLayout) => void;
-  onPatternChange: (pattern: number[]) => void;
+  onPatternsChange: (patterns: Record<string, number[]>) => void;
   onSiteChange: (site: DesignSite) => void;
 }) {
   const t = useTheme();
@@ -208,7 +211,14 @@ export function LayoutEditor({
     gap: '0.02',
     rowGap: '0.3',
   });
-  const [patternText, setPatternText] = useState(pattern.join(', '));
+  /** Autoplace: edge setback on the roof, and how many panels (blank = fill every face) */
+  const [fill, setFill] = useState({ setback: '0.3', count: '' });
+  const [note, setNote] = useState<string | null>(null);
+  /** Pattern fields being typed, by inverter model */
+  const [patternText, setPatternText] = useState<Record<string, string>>({});
+  const models = [...new Set(layout.inverters.map((i) => i.model))];
+  const specOf = (model: string) => INVERTERS.find((m) => m.model === model) ?? INVERTERS[0];
+  const textFor = (model: string) => patternText[model] ?? (patterns[model] ?? specOf(model).idealPattern ?? []).join(', ');
   const [measure, setMeasure] = useState<{
     a: { x: number; y: number };
     b?: { x: number; y: number };
@@ -688,23 +698,80 @@ export function LayoutEditor({
     return () => window.removeEventListener('keydown', listener);
   }, []);
 
-  function applyPattern() {
-    const nums = patternText
+  /** Numbers typed into a pattern field; empty for none. */
+  const parsePattern = (text: string) =>
+    text
       .split(/[,+\s]+/)
       .map((x) => Math.round(Number(x)))
       .filter((x) => x > 0);
+
+  /** Strings from each inverter model's pattern, with every roof face kept to its own MPPTs. */
+  function autoString() {
     const L = layout;
-    const strings = stringsForPattern(nums, L.inverters);
-    onPatternChange(nums);
+    const next = { ...patterns };
+    for (const model of models) {
+      const nums = parsePattern(textFor(model));
+      if (nums.length && nums.join() !== specOf(model).idealPattern?.join()) next[model] = nums;
+      else delete next[model];
+    }
+    setPatternText({});
+    onPatternsChange(next);
+    if (!L.inverters.length) {
+      setNote('Place an inverter first; its model decides the strings.');
+      return;
+    }
+    const slots = stringPlan(L.inverters, next, L.panels.length);
     commit({
       ...L,
-      strings,
-      panels: autoAssign(
-        L.panels,
-        strings.map((s, i) => ({ id: s.id, size: nums[i] })),
-      ),
+      strings: slots.map(({ id, inverterId, mppt }) => ({ id, inverterId, mppt })),
+      panels: assignStrings(L.panels, L.roofs, slots),
     });
-    setPaint(strings[0]?.id ?? null);
+    setNote(null);
+    setPaint(slots[0]?.id ?? null);
+  }
+
+  /** Fills the given faces, best first, with the Add panels settings, up to the panel count if one is typed. */
+  function autoplace(faces: RoofFace[]) {
+    const L = layout;
+    if (!faces.length) {
+      setNote('Draw a roof face first: autoplace fills roof faces.');
+      return;
+    }
+    const target = Math.round(Number(fill.count));
+    let room = fill.count.trim() !== '' && target > 0 ? target : Infinity;
+    const prefixes = [...new Set(L.panels.map((x) => x.rowId.split('-')[0]))];
+    let panels = L.panels;
+    const added: string[] = [];
+    for (const face of [...faces].sort((a, b) => noonSun(b, center.lat) - noonSun(a, center.lat))) {
+      if (room <= 0) break;
+      const idPrefix = nextId('a', prefixes);
+      prefixes.push(idPrefix);
+      const placed = fillFace({
+        panel,
+        face,
+        roofs,
+        existing: panels,
+        orientation: arr.orientation,
+        gapM: Number(arr.gap) || 0,
+        rowGapM: Number(arr.rowGap) || 0,
+        setbackM: Math.max(0, Number(fill.setback) || 0),
+        idPrefix,
+        max: room,
+      });
+      panels = [...panels, ...placed];
+      added.push(...placed.map((x) => x.id));
+      room -= placed.length;
+    }
+    setNote(
+      added.length
+        ? `Placed ${added.length} panel${added.length === 1 ? '' : 's'}${Number.isFinite(room) && room > 0 ? `; ${room} more would not fit` : ''}.`
+        : 'No room for another panel on that roof.',
+    );
+    if (!added.length) return;
+    update({ panels });
+    setSelected(new Set(added));
+    setThing(null);
+    setTool('select');
   }
 
   function setStringMppt(id: string, patch: Partial<StringDef>) {
@@ -807,7 +874,16 @@ export function LayoutEditor({
               })
             }
           />
+          <View style={{ width: 1, alignSelf: 'stretch', backgroundColor: t.line }} />
+          <Field label="Edge setback m" value={fill.setback} onChange={(v) => setFill({ ...fill, setback: v })} />
+          <Field label="Panels (blank = fill)" value={fill.count} onChange={(v) => setFill({ ...fill, count: v })} width={120} />
+          <SmallButton label="Autoplace on roof faces" onPress={() => autoplace(roofs)} strong />
         </View>
+      ) : null}
+      {note ? (
+        <ThemedText type="small" themeColor="textSecondary">
+          {note}
+        </ThemedText>
       ) : null}
 
       {tool === 'select' && selectedFace ? (
@@ -843,6 +919,7 @@ export function LayoutEditor({
               onPress={() => setEavePick((v) => !v)}
               strong={eavePick}
             />
+            <SmallButton label="Fill with panels" onPress={() => autoplace([selectedFace])} />
             <SmallButton label="Delete face" onPress={() => deleteFace(selectedFace.id)} />
           </View>
           <ThemedText type="small" themeColor="textMuted">
@@ -1172,12 +1249,26 @@ export function LayoutEditor({
       {/* Strings */}
       <View style={[styles.panel, { borderColor: t.line }]}>
         <View style={styles.row}>
-          <Field label="String pattern" value={patternText} onChange={setPatternText} width={140} />
-          <SmallButton label="Auto-assign in placement order" onPress={applyPattern} strong />
+          {models.map((model) => (
+            <Field
+              key={model}
+              label={`${model.replace('HYXi ', '')} strings`}
+              value={textFor(model)}
+              onChange={(v) => setPatternText({ ...patternText, [model]: v })}
+              width={140}
+            />
+          ))}
+          <SmallButton label="Auto-assign by roof face" onPress={autoString} strong />
           <ThemedText type="small" themeColor="textMuted">
             {layout.panels.length} panels placed · {layout.panels.filter((p) => !p.stringId).length} unassigned
           </ThemedText>
         </View>
+        {models.length ? (
+          <ThemedText type="small" themeColor="textMuted">
+            Panels per string for every inverter of that model, MPPT inputs in order; blank splits the panels evenly. Each roof face gets
+            its own MPPTs where the pattern allows.
+          </ThemedText>
+        ) : null}
         {layout.strings.map((s) => {
           const count = layout.panels.filter((p) => p.stringId === s.id).length;
           return (

@@ -10,9 +10,9 @@ export function LayoutEditor(_: {
   site: DesignSite;
   layout: DesignLayout;
   panel: PanelSpec;
-  pattern: number[];
+  patterns: Record<string, number[]>;
   onChange: (layout: DesignLayout) => void;
-  onPatternChange: (pattern: number[]) => void;
+  onPatternsChange: (patterns: Record<string, number[]>) => void;
   onSiteChange: (site: DesignSite) => void;
 }) {
   return (

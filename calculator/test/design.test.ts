@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  autoAssign, autoRotation, calculateDesign, faceAt, heightAboveEave, panelArray, panelCorners, pvgisAspect, refitFace, calibrate, calibrationFor,
-  shortCircuitAnalysis, sunAnalysis, voltageDrop, type Layout, type LayoutPanel, type RoofFace, type StringDef,
+  assignStrings, autoAssign, autoRotation, calculateDesign, faceAt, fillFace, heightAboveEave, panelArray, panelCorners, pvgisAspect, refitFace, calibrate, calibrationFor,
+  shortCircuitAnalysis, stringPlan, sunAnalysis, voltageDrop, type Layout, type LayoutPanel, type RoofFace, type StringDef,
 } from '../src/pvDesign';
 import { JINKO_725, referenceDays, referenceMeasured } from '../src/pvDesignData';
 
@@ -320,4 +320,60 @@ test('two strings on one HYX-S10K-S tracker are flagged: it has one input per MP
   const { layout, strings } = site({ inverters: [{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 6, floor: 1 }] });
   const r = calculateDesign({ layout, strings });
   assert.ok(r.warnings.some((w) => w.startsWith('INV1 MPPT2 has 2 strings but only 1 input')));
+});
+
+// ── Auto strings and autoplace ────────────────────────────────
+
+test('string plan: every HYX-S10K-S gets 8 + 7 + 7, one string per MPPT; unpatterned models split the rest evenly', () => {
+  const inv = (id: string, model: string) => ({ id, model, x: 0, y: 0, floor: 1 });
+  const plan = stringPlan([inv('INV1', 'HYXi HYX-S10K-S'), inv('INV2', 'HYXi HYX-S10K-S'), inv('INV3', 'HYXi HYX-S8K-S')], {}, 54);
+  assert.deepEqual(
+    plan.map((s) => `${s.id}:${s.inverterId}/${s.mppt}=${s.size}`),
+    ['A:INV1/0=8', 'B:INV1/1=7', 'C:INV1/2=7', 'D:INV2/0=8', 'E:INV2/1=7', 'F:INV2/2=7', 'G:INV3/0=5', 'H:INV3/1=5'],
+  );
+  // A typed pattern replaces the ideal one for that model
+  assert.deepEqual(stringPlan([inv('INV1', 'HYXi HYX-S10K-S')], { 'HYXi HYX-S10K-S': [9, 9] }, 18).map((s) => s.size), [9, 9]);
+});
+
+test('auto strings keep each roof face on its own MPPTs, wired in snake order', () => {
+  const east: RoofFace = { id: 'A', points: [{ x: -20, y: -10 }, { x: 0, y: -10 }, { x: 0, y: 10 }, { x: -20, y: 10 }], pitchDeg: 15, azimuthDeg: 90 };
+  const west: RoofFace = { id: 'B', points: [{ x: 0, y: -10 }, { x: 20, y: -10 }, { x: 20, y: 10 }, { x: 0, y: 10 }], pitchDeg: 15, azimuthDeg: 270 };
+  const roofs = [east, west];
+  const arr = (x: number, cols: number, face: RoofFace, idPrefix: string) =>
+    panelArray({ panel: JINKO_725, x, y: 0, rows: 1, cols, orientation: 'portrait', rot: autoRotation(face), gapM: 0.02, rowGapM: 0.3, idPrefix, face });
+  // 7 on the west face placed first, then 15 on the east: placement order would mix them
+  const panels = [...arr(10, 7, west, 'a'), ...arr(-10, 15, east, 'b')];
+  const slots = stringPlan([{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 0, floor: 1 }], {}, panels.length);
+  const strung = assignStrings(panels, roofs, slots);
+  const faceOf = (id: string) => new Set(strung.filter((p) => p.stringId === id).map((p) => faceAt(roofs, p)!.id));
+  assert.deepEqual([...faceOf('A')], ['A']);
+  assert.deepEqual([...faceOf('B')], ['A']);
+  assert.deepEqual([...faceOf('C')], ['B']);
+  assert.equal(strung.filter((p) => p.stringId === 'A').length, 8);
+  const r = calculateDesign({ layout: { ...site().layout, panels: strung, roofs, inverters: [{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 6, floor: 1 }] }, strings: slots });
+  assert.ok(!r.warnings.some((w) => w.includes('runs across')));
+
+  // Placement order mixes faces in a string, and the design says so
+  const mixed = autoAssign(panels, slots);
+  const m = calculateDesign({ layout: { ...site().layout, panels: mixed, roofs, inverters: [{ id: 'INV1', model: 'HYXi HYX-S10K-S', x: 0, y: 6, floor: 1 }] }, strings: slots });
+  assert.ok(m.warnings.some((w) => w.startsWith('String A runs across roof B and roof A')));
+});
+
+test('fill face: rows along the eave, inside the setback, clear of existing panels, capped by max', () => {
+  const face: RoofFace = { id: 'A', points: [{ x: 0, y: 0 }, { x: 12, y: 0 }, { x: 12, y: 8 }, { x: 0, y: 8 }], pitchDeg: 20, azimuthDeg: 180 };
+  const base = { panel: JINKO_725, face, roofs: [face], orientation: 'portrait' as const, gapM: 0.02, rowGapM: 0.3, setbackM: 0.3, idPrefix: 'f' };
+  const full = fillFace({ ...base, existing: [] });
+  // 8 m of plan is 8.51 m down the slope: three 2.384 m rows; 12 m across fits eight 1.303 m columns
+  assert.equal(full.length, 24);
+  for (const p of full) {
+    assert.equal(faceAt([face], p)?.id, 'A');
+    assert.equal(p.rot, autoRotation(face));
+    for (const c of panelCorners(JINKO_725, p, [face])) assert.ok(c.x > 0.29 && c.x < 11.71 && c.y > 0.28 && c.y < 7.72);
+  }
+  // The first row sits at the eave (south, largest y)
+  assert.ok(full[0].y > full[full.length - 1].y);
+  assert.equal(fillFace({ ...base, existing: full }).length, 0);
+  const some = fillFace({ ...base, existing: [], max: 10 });
+  assert.equal(some.length, 10);
+  assert.equal(new Set(some.map((p) => p.rowId)).size, 2);
 });

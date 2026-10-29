@@ -176,10 +176,23 @@ export function itemsFromQuote(q: QuoteResult, values: QuoteDefaults, systemType
       id: 'freight',
       category: 'Freight & logistics',
       kind: 'freight',
-      name: 'Container freight, share per panel',
+      name: 'Shipping to Manila, share per panel',
       unit: 'panel',
       qty: panels,
-      unitPrice: each(p.freight, panels, values.freightPerContainer / values.panelsPerContainer),
+      unitPrice: each(p.freight, panels, (values.shippingPerShipmentUsd * rate) / values.panelsPerShipment),
+      basis: 'panel',
+      perBasis: 1,
+    });
+  }
+  if (p.customs !== undefined) {
+    add({
+      id: 'customs',
+      category: 'Freight & logistics',
+      kind: 'freight',
+      name: 'Customs, share per panel',
+      unit: 'panel',
+      qty: panels,
+      unitPrice: each(p.customs, panels, values.customsPerShipment / values.panelsPerShipment),
       basis: 'panel',
       perBasis: 1,
     });
