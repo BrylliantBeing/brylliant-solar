@@ -604,17 +604,30 @@ function ShortCircuitBlock({ x, y, w, data }: { x: number; y: number; w: number;
   );
 }
 
-function VoltageDropBlock({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
-  const lines = data.result.circuits.flatMap((c: Circuit) => [
-    `${c.label.toUpperCase()} (${c.kind.toUpperCase()}): 2-${c.mm2}mm² ${c.kind === 'dc' ? 'PV CABLE' : 'THHN'}, L = ${n(c.oneWayM, 1)}m, I = ${n(c.vdropCurrentA)}A`,
-    `  VD = 2 × L × I × Z / 305 = ${n(c.vdropV)}V;  %VD = ${n(c.vdropV)}V / ${n(c.nominalV, 1)}V = ${n(c.vdropPct)}%  ${c.vdropPct <= 3 ? '≤ 3% OK' : '> 3%'}`,
-  ]);
+/** One line of a calc block, in mm. */
+const LINE = 1.85 * 1.35;
+/** Where text columns stop, above the title block. */
+const COL_TOP = 16;
+const COL_BOTTOM = 256;
+
+const blockH = (lines: string[]) => 6 + lines.length * LINE;
+
+function voltageDropLines(data: SheetData, w: number): string[] {
+  return data.result.circuits
+    .flatMap((c: Circuit) => [
+      `${c.label.toUpperCase()} (${c.kind.toUpperCase()}): 2-${c.mm2}mm² ${c.kind === 'dc' ? 'PV CABLE' : 'THHN'}, L = ${n(c.oneWayM, 1)}m, I = ${n(c.vdropCurrentA)}A`,
+      `  VD = 2 × L × I × Z / 305 = ${n(c.vdropV)}V;  %VD = ${n(c.vdropV)}V / ${n(c.nominalV, 1)}V = ${n(c.vdropPct)}%  ${c.vdropPct <= 3 ? '≤ 3% OK' : '> 3%'}`,
+    ])
+    .flatMap((l) => wrap(l, Math.floor(w / 0.98)));
+}
+
+function CalcBlock({ x, y, w, title, lines }: { x: number; y: number; w: number; title: string; lines: string[] }) {
   return (
     <g>
       <Heading x={x} y={y} w={w}>
-        VOLTAGE DROP CALCULATION
+        {title}
       </Heading>
-      <Lines x={x} y={y + 6} lines={lines.flatMap((l) => wrap(l, Math.floor(w / 0.98)))} size={1.85} />
+      <Lines x={x} y={y + 6} lines={lines} size={1.85} />
     </g>
   );
 }
@@ -632,21 +645,17 @@ function sunLines(r: DesignResult): string[] {
   ];
 }
 
-function StringCalc({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
+function stringCalcLines(data: SheetData): string[] {
   const p = data.result.panel;
-  const lines = data.result.strings.flatMap((s) => [
-    `STRING ${s.id} SERIES CONNECTION (${s.series}S) — ${s.inverterId} MPPT${s.mppt + 1}`,
-    `  VOC = ${n(p.vocV)}V × ${s.series} = ${n(s.vocV)}V  (${n(s.vocColdV)}V AT COLDEST)`,
-    `  VMP = ${n(p.vmpV)}V × ${s.series} = ${n(s.vmpV)}V;  IMP = ${n(s.impA)}A;  ISC = ${n(s.iscA)}A`,
-  ]);
-  return (
-    <g>
-      <Heading x={x} y={y} w={w}>
-        PANEL STRING CALCULATION
-      </Heading>
-      <Lines x={x} y={y + 6} lines={[`${p.model.toUpperCase()} ${p.watts}W`, ...lines, ...sunLines(data.result)]} size={1.85} />
-    </g>
-  );
+  return [
+    `${p.model.toUpperCase()} ${p.watts}W`,
+    ...data.result.strings.flatMap((s) => [
+      `STRING ${s.id} SERIES CONNECTION (${s.series}S) — ${s.inverterId} MPPT${s.mppt + 1}`,
+      `  VOC = ${n(p.vocV)}V × ${s.series} = ${n(s.vocV)}V  (${n(s.vocColdV)}V AT COLDEST)`,
+      `  VMP = ${n(p.vmpV)}V × ${s.series} = ${n(s.vmpV)}V;  IMP = ${n(s.impA)}A;  ISC = ${n(s.iscA)}A`,
+    ]),
+    ...sunLines(data.result),
+  ];
 }
 
 function InverterSpec({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
@@ -739,26 +748,51 @@ function Legends({ x, y, w }: { x: number; y: number; w: number }) {
  * the inverter, the AC breaker and AC SPD, the existing panel board, then the
  * bi-directional meter and the service entrance.
  */
-function SingleLine({ x, y, w, h, data }: { x: number; y: number; w: number; h: number; data: SheetData }) {
-  const r = data.result;
-  const groups = r.inverters.map((inv) => ({
+const SLD_PITCH = 12;
+
+function sldGroups(r: DesignResult) {
+  return r.inverters.map((inv) => ({
     inv,
     strings: r.strings.filter((s) => s.inverterId === inv.id && s.series > 0),
   }));
-  const pitch = 12;
-  const groupH = (g: (typeof groups)[number]) => Math.max(g.strings.length * pitch, 26) + 14;
-  const groupTops = groups.map((_, i) => y + 10 + groups.slice(0, i).reduce((a, g) => a + groupH(g), 0));
-  const pbX = x + w * 0.74;
-  const pbTop = y + 10;
-  const totalH = groups.reduce((a, g) => a + groupH(g), 0);
-  const pbH = Math.max(28, totalH - 14);
-  const feeds = groups.map((g, i) => groupTops[i] + Math.max(g.strings.length * pitch, 26) / 2);
+}
 
+const sldGroupH = (g: ReturnType<typeof sldGroups>[number]) => Math.max(g.strings.length * SLD_PITCH, 26) + 14;
+const sldPanelBoardH = (r: DesignResult) => Math.max(28, sldGroups(r).reduce((a, g) => a + sldGroupH(g), 0) - 14);
+
+/** Height the single-line diagram needs at full size, heading to summary line. */
+function singleLineHeight(r: DesignResult): number {
+  return 10 + sldPanelBoardH(r) + 32;
+}
+
+function SingleLine({ x, y, w, h, data }: { x: number; y: number; w: number; h: number; data: SheetData }) {
+  const r = data.result;
+  // Big systems shrink to fit their column rather than run off the sheet
+  const k = Math.min(1, h / singleLineHeight(r));
   return (
     <g>
       <Heading x={x} y={y} w={w}>
         PV SYSTEM SINGLE LINE DIAGRAM
       </Heading>
+      <g transform={`translate(${x} ${y}) scale(${k}) translate(${-x} ${-y})`}>
+        <SingleLineBody x={x} y={y} w={w / k} data={data} />
+      </g>
+    </g>
+  );
+}
+
+function SingleLineBody({ x, y, w, data }: { x: number; y: number; w: number; data: SheetData }) {
+  const r = data.result;
+  const groups = sldGroups(r);
+  const pitch = SLD_PITCH;
+  const groupTops = groups.map((_, i) => y + 10 + groups.slice(0, i).reduce((a, g) => a + sldGroupH(g), 0));
+  const pbX = x + w * 0.74;
+  const pbTop = y + 10;
+  const pbH = sldPanelBoardH(r);
+  const feeds = groups.map((g, i) => groupTops[i] + Math.max(g.strings.length * pitch, 26) / 2);
+
+  return (
+    <g>
       {groups.map((g, gi) => {
         const top = groupTops[gi];
         const invY = feeds[gi];
@@ -869,7 +903,7 @@ function SingleLine({ x, y, w, h, data }: { x: number; y: number; w: number; h: 
         230V, 60HZ, SINGLE PHASE
       </T>
       {r.shortCircuit ? (
-        <T x={x} y={y + h - 1} size={1.7}>
+        <T x={x} y={pbTop + pbH + 31} size={1.7}>
           {`ALL BREAKERS ${r.shortCircuit.kaic}KAIC MINIMUM. DC/AC RATIO ${r.dcAcRatio ?? '—'} · ${n(r.dcKw)}KWP DC / ${n(r.acKw)}KW AC`}
         </T>
       ) : null}
@@ -881,17 +915,49 @@ function SingleLine({ x, y, w, h, data }: { x: number; y: number; w: number; h: 
  * Sheets
  * ------------------------------------------------------------------ */
 
-export function Sheet1({ data }: { data: SheetData }) {
+type CalcText = { title: string; lines: string[] };
+
+/**
+ * Where sheet 1's growing parts go. Small systems keep everything on sheet 1;
+ * a calc block that would run past the title block moves to a calculations
+ * sheet, and the single-line diagram then takes the whole column.
+ */
+function sheet1Layout(data: SheetData) {
+  const sld = singleLineHeight(data.result);
+  const str = stringCalcLines(data);
+  const vd = voltageDropLines(data, 100);
+  const strFits = sld + 8 + blockH(str) <= COL_BOTTOM - COL_TOP;
+  const vdFits = 210 + blockH(vd) <= COL_BOTTOM;
+  const moved: CalcText[] = [
+    ...(vdFits ? [] : [{ title: 'VOLTAGE DROP CALCULATION', lines: voltageDropLines(data, 94) }]),
+    ...(strFits ? [] : [{ title: 'PANEL STRING CALCULATION', lines: str }]),
+  ];
+  return {
+    sldH: strFits ? sld : Math.min(sld, COL_BOTTOM - COL_TOP - 6),
+    str: strFits ? str : null,
+    vd: vdFits ? vd : null,
+    moved,
+  };
+}
+
+export function Sheet1({ data, total }: { data: SheetData; total: number }) {
+  const lay = sheet1Layout(data);
   return (
-    <Frame data={data} sheet={1} total={2}>
+    <Frame data={data} sheet={1} total={total}>
       <GeneralNotes x={14} y={16} w={88} />
       <ServiceEntrance x={14} y={108} w={88} data={data} />
       <ShortCircuitBlock x={14} y={176} w={88} data={data} />
       <SitePlan x={110} y={16} w={100} h={110} data={data} />
       <VicinityMap x={110} y={134} w={100} h={62} data={data} />
-      <VoltageDropBlock x={110} y={210} w={100} data={data} />
-      <SingleLine x={218} y={16} w={112} h={170} data={data} />
-      <StringCalc x={218} y={200} w={112} data={data} />
+      <CalcBlock x={110} y={210} w={100} title="VOLTAGE DROP CALCULATION" lines={lay.vd ?? ['SEE SHEET E-2.']} />
+      <SingleLine x={218} y={COL_TOP} w={112} h={lay.sldH} data={data} />
+      {lay.str ? (
+        <CalcBlock x={218} y={COL_TOP + lay.sldH + 8} w={112} title="PANEL STRING CALCULATION" lines={lay.str} />
+      ) : (
+        <T x={218} y={COL_BOTTOM} size={1.85}>
+          PANEL STRING CALCULATION: SEE SHEET E-2.
+        </T>
+      )}
       <InverterSpec x={338} y={16} w={70} data={data} />
       <g>
         <Heading x={338} y={60} w={70}>
@@ -912,7 +978,39 @@ export function Sheet1({ data }: { data: SheetData }) {
   );
 }
 
-export function Sheet2({ data }: { data: SheetData }) {
+/** The calc blocks that did not fit on sheet 1, flowed down four columns. */
+function CalcSheet({ data, blocks, total }: { data: SheetData; blocks: CalcText[]; total: number }) {
+  const w = 94;
+  const xs = [14, 114, 214, 314];
+  const placed: (CalcText & { x: number; y: number })[] = [];
+  let col = 0;
+  let y = COL_TOP;
+  for (const b of blocks) {
+    let rest = b.lines;
+    let title = b.title;
+    while (rest.length && col < xs.length) {
+      const room = Math.floor((COL_BOTTOM - y - 6) / LINE);
+      if (room < 3) {
+        col++;
+        y = COL_TOP;
+        continue;
+      }
+      placed.push({ x: xs[col], y, title, lines: rest.slice(0, room) });
+      y += blockH(rest.slice(0, room)) + 8;
+      rest = rest.slice(room);
+      title = `${b.title} (CONT.)`;
+    }
+  }
+  return (
+    <Frame data={data} sheet={2} total={total}>
+      {placed.map((b, i) => (
+        <CalcBlock key={i} x={b.x} y={b.y} w={w} title={b.title} lines={b.lines} />
+      ))}
+    </Frame>
+  );
+}
+
+export function Sheet2({ data, sheet, total }: { data: SheetData; sheet: number; total: number }) {
   const { loads } = data.doc.inputs.plan;
   const pv = data.result.circuits.filter((c) => c.kind === 'ac');
   const rows = [
@@ -944,7 +1042,7 @@ export function Sheet2({ data }: { data: SheetData }) {
   const half = Math.ceil(rows.length / 2);
 
   return (
-    <Frame data={data} sheet={2} total={2}>
+    <Frame data={data} sheet={sheet} total={total}>
       <Heading x={tx} y={20} w={tw}>
         SCHEDULE OF LOADS
       </Heading>
@@ -1074,12 +1172,15 @@ export function Sheet2({ data }: { data: SheetData }) {
   );
 }
 
-/** Both sheets, for the screen preview and the print copy. */
+/** The whole plan set, for the screen preview and the print copy. */
 export function PlanSheets({ data }: { data: SheetData }) {
+  const { moved } = sheet1Layout(data);
+  const total = moved.length ? 3 : 2;
   return (
     <>
-      <Sheet1 data={data} />
-      <Sheet2 data={data} />
+      <Sheet1 data={data} total={total} />
+      {moved.length ? <CalcSheet data={data} blocks={moved} total={total} /> : null}
+      <Sheet2 data={data} sheet={total} total={total} />
     </>
   );
 }
