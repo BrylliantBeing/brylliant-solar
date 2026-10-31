@@ -895,6 +895,11 @@ export function LayoutEditor({
               value={String(selectedFace.pitchDeg)}
               onChange={(v) => {
                 const n = Number(v);
+                if (v.trim() !== '' && Number.isFinite(n) && n >= 0 && n <= 75)
+                  setFace(selectedFace.id, { pitchDeg: n }, `face-pitch-${selectedFace.id}`);
+              }}
+              onCommit={(v) => {
+                const n = Number(v);
                 if (v.trim() !== '' && Number.isFinite(n))
                   setFace(selectedFace.id, { pitchDeg: Math.min(75, Math.max(0, n)) }, `face-pitch-${selectedFace.id}`);
               }}
@@ -1437,22 +1442,36 @@ function Field({
   label,
   value,
   onChange,
+  onCommit,
   width = 90,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  /** When set, the field keeps its own text while editing (so it can be blank) and hands it over on blur / Enter. */
+  onCommit?: (v: string) => void;
   width?: number;
 }) {
   const t = useTheme();
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    onCommit?.(draft);
+    setDraft(null);
+  };
   return (
     <View style={{ gap: 2 }}>
       <ThemedText type="eyebrow" themeColor="textMuted" style={{ fontSize: 10 }}>
         {label}
       </ThemedText>
       <TextInput
-        value={value}
-        onChangeText={onChange}
+        value={draft ?? value}
+        onChangeText={(v) => {
+          if (onCommit) setDraft(v);
+          onChange(v);
+        }}
+        onBlur={commit}
+        onSubmitEditing={commit}
         style={[
           styles.input,
           {
