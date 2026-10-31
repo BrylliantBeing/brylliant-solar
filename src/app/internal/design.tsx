@@ -235,9 +235,12 @@ function Designer({ projectId }: { projectId: number }) {
   }
 
   const dirty = JSON.stringify(doc) !== snapshot;
-  const set = (patch: Partial<Doc>) => setDoc({ ...doc, ...patch });
-  const setInputs = (patch: Partial<Doc['inputs']>) => set({ inputs: { ...doc.inputs, ...patch } });
-  const setPlan = (patch: Partial<PlanSet>) => setInputs({ plan: { ...doc.inputs.plan, ...patch } });
+  // Updaters, not values: one editor action can change the layout and the inputs together, and each
+  // change must build on the other rather than on this render's doc.
+  const set = (patch: Partial<Doc>) => setDoc((d) => d && { ...d, ...patch });
+  const setInputs = (patch: Partial<Doc['inputs']>) => setDoc((d) => d && { ...d, inputs: { ...d.inputs, ...patch } });
+  const setPlan = (patch: Partial<PlanSet>) =>
+    setDoc((d) => d && { ...d, inputs: { ...d.inputs, plan: { ...d.inputs.plan, ...patch } } });
 
   async function save(): Promise<boolean> {
     if (!doc?.site || !result) {
